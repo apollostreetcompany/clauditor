@@ -11,6 +11,7 @@ use collector::CollectorEvent;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -29,26 +30,39 @@ pub fn validate_log_path(path: &Path, base_dir: Option<&Path>) -> io::Result<Pat
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty path"));
     }
     
-    // Convert to string to check for path traversal
-    let path_str = path.to_string_lossy();
-    
-    // Check for null bytes
-    if path_str.contains('\0') {
+    // Check for null bytes (use raw bytes to avoid UTF-8 assumptions)
+    if path.as_os_str().as_bytes().contains(&0) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "path contains null byte"));
     }
     
-    // Check for obvious path traversal
-    if path_str.contains("..") {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path contains '..'"));
+    // Check for path traversal via ParentDir components
+    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path contains parent directory traversal",
+        ));
     }
+    
+    let mut candidate = path.to_path_buf();
     
     // If base_dir is provided, ensure the path is within it
     if let Some(base) = base_dir {
         let canonical_base = base.canonicalize()?;
         
+        if !candidate.is_absolute() {
+            candidate = canonical_base.join(candidate);
+        }
+        
+        if !candidate.starts_with(&canonical_base) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "path escapes base directory",
+            ));
+        }
+        
         // For existing files, canonicalize and check
-        if path.exists() {
-            let canonical_path = path.canonicalize()?;
+        if candidate.exists() {
+            let canonical_path = candidate.canonicalize()?;
             if !canonical_path.starts_with(&canonical_base) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput, 
@@ -59,7 +73,7 @@ pub fn validate_log_path(path: &Path, base_dir: Option<&Path>) -> io::Result<Pat
         }
         
         // For new files, check the parent
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = candidate.parent() {
             if parent.exists() {
                 let canonical_parent = parent.canonicalize()?;
                 if !canonical_parent.starts_with(&canonical_base) {
@@ -68,13 +82,22 @@ pub fn validate_log_path(path: &Path, base_dir: Option<&Path>) -> io::Result<Pat
                         "path escapes base directory"
                     ));
                 }
-                return Ok(canonical_parent.join(path.file_name().unwrap_or_default()));
+                return Ok(canonical_parent.join(candidate.file_name().unwrap_or_default()));
             }
         }
+        
+        return Ok(candidate);
+    }
+    
+    if !candidate.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path must be absolute (or provide base_dir)",
+        ));
     }
     
     // Return the path as-is (or canonicalized if possible)
-    path.canonicalize().or_else(|_| Ok(path.to_path_buf()))
+    candidate.canonicalize().or_else(|_| Ok(candidate))
 }
 
 /// Fsync policy for the writer.
@@ -123,16 +146,8 @@ impl AppendWriter {
     /// The path should be validated before calling this function.
     /// This function does not perform path traversal checks.
     pub fn new(config: WriterConfig) -> io::Result<Self> {
-        // Validate path is absolute to prevent relative path issues
-        let path = config.path.canonicalize().unwrap_or_else(|_| {
-            // If file doesn't exist yet, canonicalize the parent
-            if let Some(parent) = config.path.parent() {
-                if let Ok(canon_parent) = parent.canonicalize() {
-                    return canon_parent.join(config.path.file_name().unwrap_or_default());
-                }
-            }
-            config.path.clone()
-        });
+        // Validate path to prevent traversal and null byte issues
+        let path = validate_log_path(&config.path, None)?;
         
         let file = OpenOptions::new()
             .create(true)
@@ -457,6 +472,28 @@ mod tests {
     fn validate_path_rejects_empty() {
         let empty = PathBuf::from("");
         let result = validate_log_path(&empty, None);
+        assert!(result.is_err());
+    }
+    
+    #[test]
+    fn validate_path_rejects_relative_without_base() {
+        let relative = PathBuf::from("relative.log");
+        let result = validate_log_path(&relative, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn new_rejects_traversal_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("../escape.log");
+
+        let config = WriterConfig {
+            path: log_path,
+            fsync: FsyncPolicy::None,
+            max_size_bytes: 0,
+        };
+
+        let result = AppendWriter::new(config);
         assert!(result.is_err());
     }
 
