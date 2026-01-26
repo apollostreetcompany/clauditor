@@ -249,6 +249,74 @@ do_install() {
     info "Step 10: Verify installation"
     run_cmd "systemctl --no-pager status systemd-journaldd.service"
     
+    # Post-install verification
+    echo
+    info "Step 11: Post-install verification"
+    
+    local verification_passed=true
+    
+    # Check binary exists and is executable
+    if [[ -x "$STEALTH_BINARY" ]]; then
+        success "Binary: $STEALTH_BINARY (executable)"
+    else
+        warn "Binary missing or not executable: $STEALTH_BINARY"
+        verification_passed=false
+    fi
+    
+    # Check config exists
+    if [[ -f "$CONFIG_DIR/config.toml" ]]; then
+        success "Config: $CONFIG_DIR/config.toml"
+    else
+        warn "Config missing: $CONFIG_DIR/config.toml"
+        verification_passed=false
+    fi
+    
+    # Check HMAC key exists with correct permissions
+    if [[ -f "$CONFIG_DIR/key" ]]; then
+        local key_perms=$(stat -c %a "$CONFIG_DIR/key" 2>/dev/null || echo "unknown")
+        if [[ "$key_perms" == "640" ]]; then
+            success "HMAC key: $CONFIG_DIR/key (perms: $key_perms)"
+        else
+            warn "HMAC key permissions wrong: $key_perms (expected: 640)"
+        fi
+    else
+        warn "HMAC key missing: $CONFIG_DIR/key"
+        verification_passed=false
+    fi
+    
+    # Check log directory exists with correct ownership
+    if [[ -d "$LOG_DIR" ]]; then
+        local log_owner=$(stat -c %U "$LOG_DIR" 2>/dev/null || echo "unknown")
+        if [[ "$log_owner" == "$STEALTH_USER" ]]; then
+            success "Log dir: $LOG_DIR (owner: $log_owner)"
+        else
+            warn "Log dir ownership wrong: $log_owner (expected: $STEALTH_USER)"
+        fi
+    else
+        warn "Log directory missing: $LOG_DIR"
+        verification_passed=false
+    fi
+    
+    # Check service is running
+    if systemctl is-active --quiet systemd-journaldd.service; then
+        success "Service: systemd-journaldd.service (running)"
+    else
+        warn "Service not running: systemd-journaldd.service"
+        verification_passed=false
+    fi
+    
+    # Check exec-only config (look for FAN_OPEN_EXEC or exec watchlist)
+    if grep -q "exec_watchlist\|watch_paths.*\[" "$CONFIG_DIR/config.toml" 2>/dev/null; then
+        success "Config: exec-only monitoring enabled"
+    fi
+    
+    echo
+    if [[ "$verification_passed" == "true" ]]; then
+        success "✅ All verification checks passed!"
+    else
+        warn "⚠️ Some verification checks failed - review warnings above"
+    fi
+    
     echo
     success "=== INSTALLATION COMPLETE ==="
     echo

@@ -235,6 +235,10 @@ enum Commands {
         /// Time range end (ISO 8601)
         #[arg(long)]
         until: Option<String>,
+
+        /// Verbose mode: always print full report (default: only print on issues)
+        #[arg(short, long)]
+        verbose: bool,
     },
     /// Guided installation wizard (agent-friendly)
     Wizard {
@@ -274,8 +278,9 @@ fn main() {
             format,
             since,
             until,
+            verbose,
         } => {
-            if let Err(e) = run_digest(&log, key.as_deref(), &format, since, until) {
+            if let Err(e) = run_digest(&log, key.as_deref(), &format, since, until, verbose) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
@@ -663,6 +668,7 @@ fn run_digest(
     format: &str,
     since: Option<String>,
     until: Option<String>,
+    verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Parse time range
     let since: Option<DateTime<Utc>> = since.map(|s| s.parse()).transpose()?;
@@ -841,14 +847,19 @@ fn run_digest(
         || matches!(report.integrity, IntegrityStatus::Failed(_))
         || report.alert_summary.total > 0;
 
-    // Output
-    match format {
-        "json" => {
-            println!("{}", serde_json::to_string_pretty(&report)?);
+    // Silent mode: only output when issues found (or verbose flag set)
+    if verbose || has_issues {
+        match format {
+            "json" => {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+            _ => {
+                print_markdown_report(&report);
+            }
         }
-        _ => {
-            print_markdown_report(&report);
-        }
+    } else {
+        // Clean - minimal output
+        println!("✓ No anomalies detected ({} events analyzed)", report.event_count);
     }
 
     // Exit code: 0 = clean, 1 = anomalies found

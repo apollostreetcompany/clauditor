@@ -1,11 +1,20 @@
-# Clauditor - Security Watchdog for Clawdbot
+# Clauditor v0.1.0 - Security Watchdog for Clawdbot
 
 Clauditor is a tamper-resistant audit watchdog that makes it hard for a compromised
 Clawdbot agent to operate without leaving a trail. It runs a dedicated `sysaudit`
 daemon, captures filesystem activity, appends HMAC-chained JSON logs, and emits
 alerts when suspicious patterns are detected.
 
-## Features
+## 🆕 v0 Features
+- **Exec-only monitoring** — Focuses on command executions (FAN_OPEN_EXEC), not every file access
+- **Sequence detection** — Detects credential read → network command patterns (potential exfiltration)
+- **Command baseline** — Tracks known commands and flags first-time executions
+- **Orphan exec detection** — Flags commands that run when no Clawdbot session is active
+- **Silent digest mode** — Only outputs when issues found (default), use `--verbose` for full report
+- **Enhanced reports** — Status badges, severity-sorted alerts, helpful notes
+- **Post-install verification** — Wizard validates installation completeness
+
+## Core Features
 - Separate `sysaudit` daemon (stealth service name: `systemd-journaldd`)
 - Append-only log writer with HMAC hash chaining
 - Rule-based detection for exfiltration, injection, persistence, tamper attempts
@@ -76,8 +85,28 @@ systemctl status systemd-journaldd
 ```
 
 ### Generate digest report
+
+Silent mode (default) — only outputs when issues found:
 ```bash
-clauditor digest --log /var/lib/.sysd/.audit/events.log --key /etc/sysaudit/key --format markdown
+clauditor digest --log /var/lib/.sysd/.audit/events.log --key /etc/sysaudit/key
+# Output: "✓ No anomalies detected (1234 events analyzed)" if clean
+# Exit code: 0 = clean, 1 = issues found
+```
+
+Verbose mode — always show full report:
+```bash
+clauditor digest --log /var/lib/.sysd/.audit/events.log --key /etc/sysaudit/key --verbose
+```
+
+JSON output for scripting:
+```bash
+clauditor digest --log /var/lib/.sysd/.audit/events.log --format json
+```
+
+### Use in cron (silent unless issues)
+```bash
+# Daily digest at 6am, only notifies if anomalies found
+0 6 * * * /usr/local/sbin/systemd-journaldd digest --log /var/lib/.sysd/.audit/events.log --key /etc/sysaudit/key || echo "Anomalies detected" | mail -s "Clauditor Alert" admin@example.com
 ```
 
 ### View raw logs
