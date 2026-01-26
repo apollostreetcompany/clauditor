@@ -29,6 +29,8 @@ pub enum FileEventKind {
     Create,
     Modify,
     Delete,
+    /// Executable opened for execution (FAN_OPEN_EXEC)
+    Exec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +112,11 @@ pub struct DevCollector {
 impl DevCollector {
     pub fn new(session_id: impl Into<String>, key: Vec<u8>) -> io::Result<Self> {
         let inotify = Inotify::init()?;
+        eprintln!(
+            "dev collector init: pid={} uid={}",
+            std::process::id(),
+            unsafe { libc::geteuid() as u32 }
+        );
         Ok(Self {
             inotify,
             buffer: vec![0u8; INOTIFY_BUFFER_SIZE],
@@ -131,23 +138,37 @@ impl DevCollector {
             | WatchMask::MOVED_TO
             | WatchMask::CLOSE_WRITE;
         let wd = self.inotify.watches().add(&path, mask)?;
+        eprintln!("dev collector watch added: path={path:?} wd={wd:?}");
         self.watch_paths.insert(wd.clone(), path);
         Ok(wd)
     }
 
     pub fn read_available(&mut self) -> io::Result<Vec<CollectorEvent>> {
         let mut output = Vec::new();
+        eprintln!("dev collector read_available: waiting for inotify events...");
         let events = self.inotify.read_events_blocking(&mut self.buffer)?;
+        let mut event_count = 0usize;
 
         for event in events {
+            event_count += 1;
+            eprintln!(
+                "dev collector raw event: wd={:?} mask={:?} name={:?}",
+                event.wd, event.mask, event.name
+            );
             let kind = match mask_to_kind(event.mask) {
                 Some(kind) => kind,
-                None => continue,
+                None => {
+                    eprintln!("dev collector skipping event: unhandled mask={:?}", event.mask);
+                    continue;
+                }
             };
 
             let base = match self.watch_paths.get(&event.wd) {
                 Some(path) => path.clone(),
-                None => continue,
+                None => {
+                    eprintln!("dev collector skipping event: unknown watch descriptor");
+                    continue;
+                }
             };
 
             let raw_path = match event.name {
@@ -158,7 +179,10 @@ impl DevCollector {
             // Skip paths that can't be validated (null bytes, etc.)
             let path = match validate_path(&raw_path) {
                 Some(p) => p,
-                None => continue,
+                None => {
+                    eprintln!("dev collector skipping event: invalid path {:?}", raw_path);
+                    continue;
+                }
             };
 
             let proc_info = ProcInfo::from_pid(self.default_pid);
@@ -197,6 +221,7 @@ impl DevCollector {
             });
         }
 
+        eprintln!("dev collector read_available: processed {event_count} events");
         Ok(output)
     }
 }

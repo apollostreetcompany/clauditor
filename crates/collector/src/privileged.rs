@@ -21,6 +21,7 @@ const FAN_MARK_MOUNT: libc::c_uint = 0x10;
 
 const FAN_OPEN: u64 = 0x20;
 const FAN_CLOSE_WRITE: u64 = 0x08;
+const FAN_OPEN_EXEC: u64 = 0x00001000;
 const FAN_CREATE: u64 = 0x100;
 const FAN_DELETE: u64 = 0x200;
 const FAN_MOVED_FROM: u64 = 0x40000000;
@@ -89,7 +90,10 @@ impl PrivilegedCollector {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid path")
         })?;
 
-        let mask = FAN_OPEN | FAN_CLOSE_WRITE | FAN_CREATE | FAN_DELETE;
+        // Note: FAN_CREATE/FAN_DELETE require FAN_REPORT_DFID_NAME + FAN_MARK_FILESYSTEM
+        // which is incompatible with FAN_CLASS_CONTENT. We monitor opens/writes instead.
+        // FAN_OPEN_EXEC captures when executables are opened for execution.
+        let mask = FAN_OPEN | FAN_CLOSE_WRITE | FAN_OPEN_EXEC;
         let flags = FAN_MARK_ADD | FAN_MARK_MOUNT;
 
         let ret = unsafe {
@@ -201,20 +205,28 @@ impl PrivilegedCollector {
     }
 
     /// Check if fanotify is available on this system.
+    /// Returns (available, error_if_any) for diagnostics.
     pub fn is_available() -> bool {
         let fd = unsafe {
             libc::fanotify_init(FAN_CLASS_CONTENT | FAN_CLOEXEC, libc::O_RDONLY as u32)
         };
         if fd >= 0 {
             unsafe { libc::close(fd) };
+            eprintln!("fanotify_init probe succeeded");
             true
         } else {
+            let err = std::io::Error::last_os_error();
+            eprintln!("fanotify_init probe failed: {} (errno={})", err, err.raw_os_error().unwrap_or(-1));
             false
         }
     }
 }
 
 fn mask_to_kind(mask: u64) -> Option<FileEventKind> {
+    // Check FAN_OPEN_EXEC first - when an executable is opened for execution
+    if mask & FAN_OPEN_EXEC != 0 {
+        return Some(FileEventKind::Exec);
+    }
     if mask & FAN_CREATE != 0 || mask & FAN_MOVED_TO != 0 {
         return Some(FileEventKind::Create);
     }

@@ -198,17 +198,27 @@ fn spawn_collector(
     config: &CollectorConfig,
     sender: mpsc::Sender<CollectorEvent>,
 ) -> io::Result<CollectorHandle> {
+    eprintln!("spawn_collector: checking fanotify availability...");
     if PrivilegedCollector::is_available() {
-        if let Ok(handle) = spawn_privileged_collector(
+        eprintln!("spawn_collector: fanotify available, attempting privileged collector");
+        match spawn_privileged_collector(
             session_id.clone(),
             key.clone(),
             config.watch_paths.clone(),
             config.target_uid,
             sender.clone(),
         ) {
-            return Ok(handle);
+            Ok(handle) => {
+                eprintln!("privileged collector active (uid filter={})", config.target_uid);
+                return Ok(handle);
+            }
+            Err(e) => {
+                eprintln!("privileged collector spawn failed: {e}");
+            }
         }
         eprintln!("privileged collector unavailable, falling back to dev collector");
+    } else {
+        eprintln!("spawn_collector: fanotify not available, using dev collector");
     }
 
     spawn_dev_collector(session_id, key, config.watch_paths.clone(), sender)
@@ -235,18 +245,27 @@ fn spawn_dev_collector(
         for path in &watch_paths {
             if let Err(e) = collector.add_watch(path) {
                 eprintln!("watch {path:?} failed: {e}");
+            } else {
+                eprintln!("watch {path:?} ok");
             }
         }
 
         if !watch_paths.is_empty() {
             eprintln!("dev collector active (no uid filtering)");
+            eprintln!("dev collector watch list: {watch_paths:?}");
         }
 
         while !stop_clone.load(Ordering::Relaxed) {
             match collector.read_available() {
                 Ok(events) => {
+                    if events.is_empty() {
+                        eprintln!("dev collector read: 0 events");
+                    } else {
+                        eprintln!("dev collector read: {} events", events.len());
+                    }
                     for event in events {
                         if sender.send(event).is_err() {
+                            eprintln!("dev collector send failed: receiver disconnected");
                             return;
                         }
                     }
@@ -284,14 +303,26 @@ fn spawn_privileged_collector(
         for path in &watch_paths {
             if let Err(e) = collector.add_watch(path) {
                 eprintln!("watch {path:?} failed: {e}");
+            } else {
+                eprintln!("watch {path:?} ok");
             }
+        }
+
+        if !watch_paths.is_empty() {
+            eprintln!("privileged collector watch list: {watch_paths:?}");
         }
 
         while !stop_clone.load(Ordering::Relaxed) {
             match collector.read_available() {
                 Ok(events) => {
+                    if events.is_empty() {
+                        eprintln!("privileged collector read: 0 events");
+                    } else {
+                        eprintln!("privileged collector read: {} events", events.len());
+                    }
                     for event in events {
                         if sender.send(event).is_err() {
+                            eprintln!("privileged collector send failed: receiver disconnected");
                             return;
                         }
                     }
@@ -326,6 +357,8 @@ fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     let key = std::fs::read(&config.key_path)?;
     let session_id = format!("sess-{}-{}", Utc::now().timestamp(), std::process::id());
+    eprintln!("daemon starting: session_id={session_id}");
+    eprintln!("config watch_paths={:?} target_uid={}", config.collector.watch_paths, config.collector.target_uid);
 
     let (sender, receiver) = mpsc::channel();
     let collector_handle = spawn_collector(session_id, key, &config.collector, sender)?;
@@ -357,12 +390,15 @@ fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
         match receiver.recv_timeout(Duration::from_millis(500)) {
             Ok(event) => {
+                eprintln!("daemon received event: path={:?} kind={:?}", event.file.path, event.file.kind);
                 let input = event_to_detector_input(&event);
                 let alerts = detector.detect(&input);
 
                 if let Err(e) = writer.write_event(&event) {
+                    eprintln!("writer write_event failed: {e}");
                     return Err(Box::new(e));
                 }
+                eprintln!("writer wrote event");
 
                 if !alerts.is_empty() {
                     if let Err(e) = alerter.process(&event) {
@@ -576,6 +612,36 @@ fn run_digest(
 }
 
 fn event_to_detector_input(event: &CollectorEvent) -> detector::DetectorInput {
+    let (pid, uid) = event.proc.as_ref().map(|p| (p.pid, p.uid)).unwrap_or((0, 0));
+
+    // Handle FAN_OPEN_EXEC events - always treat as exec
+    if event.file.kind == collector::FileEventKind::Exec {
+        let comm = event
+            .file
+            .path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let argv = event
+            .proc
+            .as_ref()
+            .map(|p| p.cmdline.clone())
+            .unwrap_or_default();
+        let cwd = event
+            .proc
+            .as_ref()
+            .and_then(|p| p.cwd.as_ref().map(|c| c.to_string_lossy().to_string()));
+
+        return detector::DetectorInput::Exec {
+            pid,
+            uid,
+            comm,
+            argv,
+            cwd,
+        };
+    }
+
+    // If we have process info with a command, treat as exec event
     if let Some(proc) = &event.proc {
         if !proc.cmdline.is_empty() {
             let comm = proc.cmdline.first().cloned().unwrap_or_default();
@@ -593,9 +659,8 @@ fn event_to_detector_input(event: &CollectorEvent) -> detector::DetectorInput {
         collector::FileEventKind::Create => detector::FileOp::Write,
         collector::FileEventKind::Modify => detector::FileOp::Write,
         collector::FileEventKind::Delete => detector::FileOp::Unlink,
+        collector::FileEventKind::Exec => unreachable!("handled above"),
     };
-
-    let (pid, uid) = event.proc.as_ref().map(|p| (p.pid, p.uid)).unwrap_or((0, 0));
 
     detector::DetectorInput::FileOp {
         pid,

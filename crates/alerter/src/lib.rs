@@ -196,6 +196,40 @@ impl Alerter {
 
     /// Convert CollectorEvent to DetectorInput.
     fn event_to_input(&self, event: &CollectorEvent) -> DetectorInput {
+        let (pid, uid) = event
+            .proc
+            .as_ref()
+            .map(|p| (p.pid, p.uid))
+            .unwrap_or((0, 0));
+
+        // Handle FAN_OPEN_EXEC events - always treat as exec
+        if event.file.kind == collector::FileEventKind::Exec {
+            // Use binary path from the event, cmdline from proc if available
+            let comm = event
+                .file
+                .path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let argv = event
+                .proc
+                .as_ref()
+                .map(|p| p.cmdline.clone())
+                .unwrap_or_default();
+            let cwd = event
+                .proc
+                .as_ref()
+                .and_then(|p| p.cwd.as_ref().map(|c| c.to_string_lossy().to_string()));
+
+            return DetectorInput::Exec {
+                pid,
+                uid,
+                comm,
+                argv,
+                cwd,
+            };
+        }
+
         // If we have process info with a command, treat as exec event
         if let Some(proc) = &event.proc {
             if !proc.cmdline.is_empty() {
@@ -215,13 +249,8 @@ impl Alerter {
             collector::FileEventKind::Create => FileOp::Write,
             collector::FileEventKind::Modify => FileOp::Write,
             collector::FileEventKind::Delete => FileOp::Unlink,
+            collector::FileEventKind::Exec => unreachable!("handled above"),
         };
-
-        let (pid, uid) = event
-            .proc
-            .as_ref()
-            .map(|p| (p.pid, p.uid))
-            .unwrap_or((0, 0));
 
         DetectorInput::FileOp {
             pid,
