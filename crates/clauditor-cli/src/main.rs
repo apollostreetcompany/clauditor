@@ -28,8 +28,14 @@ const DEFAULT_KEY_PATH: &str = "/etc/sysaudit/key";
 const HEARTBEAT_PATH: &str = "/run/sysaudit.hb";
 const HEARTBEAT_INTERVAL_SECS: u64 = 10;
 
+fn default_key_path() -> PathBuf {
+    PathBuf::from(DEFAULT_KEY_PATH)
+}
+
 #[derive(Debug, Deserialize)]
 struct DaemonConfig {
+    #[serde(default = "default_key_path")]
+    key_path: PathBuf,
     collector: CollectorConfig,
     writer: WriterConfigFile,
     alerter: alerter::AlerterConfig,
@@ -292,7 +298,7 @@ fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let config_contents = std::fs::read_to_string(config_path)?;
     let config: DaemonConfig = toml::from_str(&config_contents)?;
 
-    let key = std::fs::read(DEFAULT_KEY_PATH)?;
+    let key = std::fs::read(&config.key_path)?;
     let session_id = format!("sess-{}-{}", Utc::now().timestamp(), std::process::id());
 
     let (sender, receiver) = mpsc::channel();

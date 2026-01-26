@@ -39,11 +39,12 @@ Build a tamper-resistant audit watchdog that makes it *hard* for a compromised `
 - [x] **Bead 10:** Wizard — interactive installer (<3 min)
 
 ### Now
-- ✅ ALL BEADS COMPLETE
+- ✅ ALL BEADS COMPLETE (including Bead 11: Daemon main loop)
 
 ### Next
-- ClawdHub submission
+- Create SKILL.md + README for ClawdHub
 - Integration testing on live system
+- ClawdHub submission
 
 ## Open Questions
 - None currently
