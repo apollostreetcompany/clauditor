@@ -35,12 +35,13 @@ Build a tamper-resistant audit watchdog that makes it *hard* for a compromised `
 - [x] **Bead 6:** Alerting integration — hook detector + channels
 - [x] **Bead 7:** Digest/report — clauditor digest subcommand
 - [x] **Bead 8:** Systemd hardening — unit files with security settings
+- [x] **Bead 9:** Sentinel — independent integrity monitor
 
 ### Now
-- Bead 9: Sentinel (outside clauditor) — detect daemon tampering
+- Bead 10: Wizard — interactive installer (<3 min)
 
 ### Next
-- Bead 10: Wizard
+- None (all beads complete)
 
 ## Open Questions
 - None currently
