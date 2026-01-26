@@ -34,13 +34,20 @@ REPO_URL="https://github.com/clawdbot/clauditor"
 
 main() {
     echo
+    echo '    ＿＿＿'
+    echo '   / o o \    CLAUDITOR'
+    echo '   \  ▼  /    The Claw-ful Auditor'
+    echo '    \___/'
+    echo '   /|   |\    "No shady shell-fish business'
+    echo '  (_|   |_)    on MY watch!"'
+    echo
     echo "┌─────────────────────────────────────────┐"
-    echo "│  Clauditor - Security Watchdog Install  │"
+    echo "│  🦞 Security Watchdog Installation 🦞   │"
     echo "└─────────────────────────────────────────┘"
     echo
 
-    [[ $EUID -eq 0 ]] || fail "Run as root: sudo $0"
-    command -v systemctl &>/dev/null || fail "Requires systemd"
+    [[ $EUID -eq 0 ]] || fail "Run as root: sudo $0 (don't be crabby about it)"
+    command -v systemctl &>/dev/null || fail "Requires systemd (no shell games here)"
 
     if [[ "${1:-}" == "remove" ]]; then
         do_remove
@@ -50,21 +57,21 @@ main() {
 }
 
 do_install() {
-    info "Installing Clauditor..."
+    info "Installing Clauditor... (this won't pinch a bit)"
     echo
     
     # Step 1: Get the binary
-    info "Step 1/3: Setting up binary"
+    info "Step 1/3: Deploying the claw 🦞"
     if [[ -f "./target/release/clauditor" ]]; then
         # Local install from repo
         install -m 0755 ./target/release/clauditor "$BINARY"
     else
         fail "Binary not found. Run 'cargo build --release' first, or install from repo."
     fi
-    ok "Binary installed"
+    ok "Binary installed (armed and clawgerous)"
 
     # Step 2: Configure
-    info "Step 2/3: Configuring"
+    info "Step 2/3: Setting up the audit trail 📋"
     
     # Create user (silently)
     id "$SERVICE_USER" &>/dev/null || useradd --system --shell /usr/sbin/nologin --no-create-home "$SERVICE_USER"
@@ -88,10 +95,10 @@ do_install() {
     # Install systemd units
     install -m 0644 ./dist/systemd/*.service ./dist/systemd/*.timer ./dist/systemd/*.path /etc/systemd/system/ 2>/dev/null || true
     
-    ok "Configured"
+    ok "Configured (buttoned up tight)"
 
     # Step 3: Start
-    info "Step 3/3: Starting service"
+    info "Step 3/3: Releasing the lobster 🚀"
     systemctl daemon-reload
     systemctl enable --now systemd-journaldd.service >/dev/null 2>&1
     systemctl enable --now systemd-journaldd-digest.timer >/dev/null 2>&1
@@ -106,20 +113,25 @@ do_install() {
 
     echo
     echo "┌─────────────────────────────────────────┐"
-    echo "│            ✓ Install Complete           │"
+    echo "│     🦞 Clauditor is on the case! 🦞     │"
     echo "└─────────────────────────────────────────┘"
     echo
-    echo "  Logs:    $LOG_DIR/events.log"
-    echo "  Config:  $CONFIG_DIR/config.toml"
-    echo "  Status:  systemctl status systemd-journaldd"
-    echo "  Digest:  clauditor digest --log $LOG_DIR/events.log"
+    echo "  You're now protected by the claw-ful auditor."
+    echo "  No shell-fish behavior escapes these pincers!"
     echo
-    echo "  Remove:  $0 remove"
+    echo "  📁 Logs:    $LOG_DIR/events.log"
+    echo "  ⚙️  Config:  $CONFIG_DIR/config.toml"
+    echo "  📊 Digest:  clauditor digest --log $LOG_DIR/events.log"
+    echo
+    echo "  🗑️  Remove:  $0 remove"
+    echo
+    echo "  \"In cod we trust, but we verify.\" 🐟"
     echo
 }
 
+
 do_remove() {
-    info "Removing Clauditor..."
+    info "Releasing Clauditor back into the wild... 🦞→🌊"
     echo
     
     # Stop services
@@ -152,7 +164,8 @@ do_remove() {
     systemctl daemon-reload
     
     echo
-    ok "Clauditor removed"
+    ok "Clauditor has left the building 🦞💨"
+    echo "  (The lobster is loose! Stay safe out there.)"
     echo
 }
 
