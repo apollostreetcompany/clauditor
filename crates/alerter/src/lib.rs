@@ -295,10 +295,10 @@ impl Alerter {
             if let Some(queue_path) = &self.config.queue_path {
                 self.queue_alert(queue_path, payload)?;
             }
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("all alert channels failed: {:?}", errors),
-            ));
+            return Err(io::Error::other(format!(
+                "all alert channels failed: {:?}",
+                errors
+            )));
         }
 
         Ok(())
@@ -326,8 +326,7 @@ impl Alerter {
 
                 let output = cmd.output()?;
                 if !output.status.success() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
+                    return Err(io::Error::other(
                         String::from_utf8_lossy(&output.stderr).to_string(),
                     ));
                 }
@@ -389,10 +388,10 @@ impl Alerter {
 
                 let status = child.wait()?;
                 if !status.success() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("command exited with {}", status),
-                    ));
+                    return Err(io::Error::other(format!(
+                        "command exited with {}",
+                        status
+                    )));
                 }
                 Ok(())
             }
@@ -452,6 +451,7 @@ impl BackgroundAlerter {
     }
 
     /// Send an event to be processed.
+    #[allow(clippy::result_large_err)] // CollectorEvent is intentionally large for rich context
     pub fn send(&self, event: CollectorEvent) -> Result<(), mpsc::SendError<CollectorEvent>> {
         self.sender.send(event)
     }

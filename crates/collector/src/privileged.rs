@@ -30,6 +30,7 @@ const FAN_MARK_FILESYSTEM: libc::c_uint = 0x100;
 const FAN_OPEN: u64 = 0x20;
 const FAN_CLOSE_WRITE: u64 = 0x08;
 const FAN_CLOSE_NOWRITE: u64 = 0x10;
+#[allow(dead_code)] // Reserved for future use in event monitoring
 const FAN_CLOSE: u64 = FAN_CLOSE_WRITE | FAN_CLOSE_NOWRITE;
 const FAN_OPEN_EXEC: u64 = 0x00001000;
 const FAN_CREATE: u64 = 0x100;

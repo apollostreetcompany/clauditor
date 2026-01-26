@@ -97,7 +97,7 @@ pub fn validate_log_path(path: &Path, base_dir: Option<&Path>) -> io::Result<Pat
     }
     
     // Return the path as-is (or canonicalized if possible)
-    candidate.canonicalize().or_else(|_| Ok(candidate))
+    candidate.canonicalize().or(Ok(candidate))
 }
 
 /// Fsync policy for the writer.
@@ -188,7 +188,7 @@ impl AppendWriter {
                 self.file.flush()?;
                 self.file.get_ref().sync_data()?;
             }
-            FsyncPolicy::Periodic(n) if self.write_count % n == 0 => {
+            FsyncPolicy::Periodic(n) if self.write_count.is_multiple_of(n) => {
                 self.file.flush()?;
                 self.file.get_ref().sync_data()?;
             }
@@ -279,10 +279,7 @@ impl AppendWriter {
             .output()?;
 
         if !output.status.success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "lsattr failed",
-            ));
+            return Err(io::Error::other("lsattr failed"));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);

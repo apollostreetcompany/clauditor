@@ -296,6 +296,7 @@ fn main() {
 
 struct CollectorHandle {
     stop: Arc<AtomicBool>,
+    #[allow(dead_code)] // Kept to allow joining on shutdown
     handle: thread::JoinHandle<()>,
 }
 
@@ -931,8 +932,8 @@ fn event_to_detector_input(event: &CollectorEvent) -> detector::DetectorInput {
 
 fn print_markdown_report(report: &DigestReport) {
     // Determine overall status
-    let has_critical = report.alert_summary.by_severity.get("Critical").map_or(false, |&c| c > 0);
-    let has_high = report.alert_summary.by_severity.get("High").map_or(false, |&c| c > 0);
+    let has_critical = report.alert_summary.by_severity.get("Critical").is_some_and(|&c| c > 0);
+    let has_high = report.alert_summary.by_severity.get("High").is_some_and(|&c| c > 0);
     let has_issues = !report.anomalies.is_empty()
         || !report.sequence_alerts.is_empty()
         || !report.orphan_execs.is_empty()
@@ -1301,7 +1302,7 @@ fn wizard_verify() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn wizard_step(number: u8) -> Result<(), Box<dyn std::error::Error>> {
-    if number < 1 || number > TOTAL_STEPS {
+    if !(1..=TOTAL_STEPS).contains(&number) {
         return Err(format!("Invalid step number. Must be 1-{}", TOTAL_STEPS).into());
     }
 
@@ -1330,7 +1331,7 @@ fn print_step_instructions(step: &WizardStep) {
     println!("COMMAND TO RUN:");
     println!("┌─────────────────────────────────────────────────────────────────┐");
     for line in step.command.lines() {
-        println!("│  {}│", format!("{:<63}", line.trim()));
+        println!("│  {:<63}│", line.trim());
     }
     println!("└─────────────────────────────────────────────────────────────────┘");
     println!();
