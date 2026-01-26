@@ -1,3 +1,9 @@
+//! Collector crate for clauditor.
+//!
+//! Provides two backends:
+//! - `DevCollector`: uses inotify, runs unprivileged (dev mode)
+//! - `PrivilegedCollector`: uses fanotify with UID filtering (requires CAP_SYS_ADMIN)
+
 use chrono::Utc;
 use inotify::{Inotify, WatchDescriptor, WatchMask};
 use schema::{Event, EventKind};
@@ -8,6 +14,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+
+mod privileged;
+pub use privileged::PrivilegedCollector;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -29,12 +29,12 @@ Build a tamper-resistant audit watchdog that makes it *hard* for a compromised `
 - [x] **Bead 1:** Schema crate — Event types + HMAC hash chain + 4 tests
 - [x] **Bead 2:** Detector crate — Rule-based detection (20+ rules, 4 tests)
 - [x] .gitignore added, target artifacts cleaned
+- [x] **Bead 3:** Collector (dev mode) — inotify + proc enrichment, Collector with start/stop
 
 ### Now
-- Bead 3: Collector (dev mode) — inotify + proc enrichment, unprivileged
+- Bead 4: Collector (privileged) — fanotify + eBPF with UID filtering
 
 ### Next
-- Bead 4: Collector (privileged) — fanotify + eBPF with UID filtering
 - Bead 5: Append-only writer — O_APPEND + chattr +a integration
 - Bead 6: Alerting integration
 - Bead 7: Digest/report subcommand
