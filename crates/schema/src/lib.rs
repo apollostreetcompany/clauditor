@@ -41,9 +41,8 @@ pub struct ChainAnchor {
 impl ChainAnchor {
 	/// Create an anchor for a chain of events.
 	pub fn create(events: &[Event], key: &[u8]) -> Option<Self> {
-		let last = events.last()?;
 		let length = events.len();
-		let last_hash = last.hash;
+		let last_hash = events.last().map(|e| e.hash).unwrap_or([0u8; 32]);
 		
 		let anchor_mac = Self::compute_anchor_mac(key, length, &last_hash);
 		
@@ -64,8 +63,13 @@ impl ChainAnchor {
 			});
 		}
 		
+		// Verify the anchor MAC (including empty chains)
+		let expected_mac = Self::compute_anchor_mac(key, self.length, &self.last_hash);
+		if !constant_time_eq(&expected_mac, &self.anchor_mac) {
+			return Err(AnchorError::AnchorMacInvalid);
+		}
+		
 		if events.is_empty() {
-			// Empty chain with length 0 is valid
 			return Ok(());
 		}
 		
@@ -76,20 +80,16 @@ impl ChainAnchor {
 			return Err(AnchorError::LastHashMismatch);
 		}
 		
-		// Verify the anchor MAC
-		let expected_mac = Self::compute_anchor_mac(key, self.length, &self.last_hash);
-		if !constant_time_eq(&expected_mac, &self.anchor_mac) {
-			return Err(AnchorError::AnchorMacInvalid);
-		}
-		
 		Ok(())
 	}
 	
 	fn compute_anchor_mac(key: &[u8], length: usize, last_hash: &[u8; 32]) -> [u8; 32] {
+		let length_u64 = u64::try_from(length)
+			.expect("anchor length must fit in u64");
 		let mut mac = HmacSha256::new_from_slice(key)
 			.expect("HMAC can take key of any size");
 		mac.update(b"clauditor:anchor:v1:");
-		mac.update(&length.to_le_bytes());
+		mac.update(&length_u64.to_le_bytes());
 		mac.update(last_hash);
 		
 		let digest = mac.finalize().into_bytes();
@@ -440,6 +440,16 @@ mod tests {
 			AnchorError::LengthMismatch { .. } | AnchorError::AnchorMacInvalid => {}
 			other => panic!("expected LengthMismatch or AnchorMacInvalid, got {other:?}"),
 		}
+	}
+
+	#[test]
+	fn anchor_empty_chain() {
+		let events: Vec<Event> = Vec::new();
+		let anchor = ChainAnchor::create(&events, KEY).unwrap();
+		
+		assert_eq!(anchor.length, 0);
+		assert_eq!(anchor.last_hash, [0u8; 32]);
+		anchor.verify(&events, KEY).unwrap();
 	}
 
 	#[test]
