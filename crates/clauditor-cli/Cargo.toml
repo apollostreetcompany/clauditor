@@ -17,3 +17,6 @@ collector = { path = "../collector" }
 detector = { path = "../detector" }
 writer = { path = "../writer" }
 alerter = { path = "../alerter" }
+sd-notify = "0.4"
+signal-hook = "0.3"
+toml = "0.8"

@@ -1,18 +1,88 @@
 //! Clauditor CLI - Security audit watchdog for Clawdbot
 //!
 //! Subcommands:
+//! - daemon: Run the watchdog daemon
 //! - digest: Generate a summary report from logs
 
+use alerter::Alerter;
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use collector::CollectorEvent;
-
+use collector::{CollectorEvent, DevCollector, PrivilegedCollector};
 use schema::verify_chain;
-use serde::Serialize;
+use sd_notify::NotifyState;
+use serde::{Deserialize, Serialize};
+use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use std::collections::HashMap;
+use std::env;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::io::{self, BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::{Duration, Instant};
+use writer::{AppendWriter, FsyncPolicy, WriterConfig};
+
+const DEFAULT_CONFIG_PATH: &str = "/etc/sysaudit/config.toml";
+const DEFAULT_KEY_PATH: &str = "/etc/sysaudit/key";
+const HEARTBEAT_PATH: &str = "/run/sysaudit.hb";
+const HEARTBEAT_INTERVAL_SECS: u64 = 10;
+
+#[derive(Debug, Deserialize)]
+struct DaemonConfig {
+    collector: CollectorConfig,
+    writer: WriterConfigFile,
+    alerter: alerter::AlerterConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct CollectorConfig {
+    watch_paths: Vec<PathBuf>,
+    target_uid: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FsyncMode {
+    None,
+    Periodic,
+    Every,
+}
+
+fn default_fsync_mode() -> FsyncMode {
+    FsyncMode::Periodic
+}
+
+fn default_fsync_interval() -> u32 {
+    100
+}
+
+#[derive(Debug, Deserialize)]
+struct WriterConfigFile {
+    log_path: PathBuf,
+    #[serde(default = "default_fsync_mode")]
+    fsync: FsyncMode,
+    #[serde(default = "default_fsync_interval")]
+    fsync_interval: u32,
+    #[serde(default)]
+    max_size_bytes: u64,
+}
+
+impl WriterConfigFile {
+    fn to_writer_config(&self) -> WriterConfig {
+        let fsync = match self.fsync {
+            FsyncMode::None => FsyncPolicy::None,
+            FsyncMode::Every => FsyncPolicy::Every,
+            FsyncMode::Periodic => FsyncPolicy::Periodic(self.fsync_interval),
+        };
+
+        WriterConfig {
+            path: self.log_path.clone(),
+            fsync,
+            max_size_bytes: self.max_size_bytes,
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "clauditor")]
@@ -24,6 +94,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run the clauditor daemon
+    Daemon {
+        /// Path to the config file
+        #[arg(short, long, default_value = DEFAULT_CONFIG_PATH)]
+        config: PathBuf,
+    },
     /// Generate a digest/report from log files
     Digest {
         /// Path to the log file
@@ -52,6 +128,12 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Daemon { config } => {
+            if let Err(e) = run_daemon(&config) {
+                eprintln!("Daemon error: {}", e);
+                std::process::exit(1);
+            }
+        }
         Commands::Digest {
             log,
             key,
@@ -65,6 +147,220 @@ fn main() {
             }
         }
     }
+}
+
+struct CollectorHandle {
+    stop: Arc<AtomicBool>,
+    handle: thread::JoinHandle<()>,
+}
+
+impl CollectorHandle {
+    fn request_stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+fn spawn_collector(
+    session_id: String,
+    key: Vec<u8>,
+    config: &CollectorConfig,
+    sender: mpsc::Sender<CollectorEvent>,
+) -> io::Result<CollectorHandle> {
+    if PrivilegedCollector::is_available() {
+        if let Ok(handle) = spawn_privileged_collector(
+            session_id.clone(),
+            key.clone(),
+            config.watch_paths.clone(),
+            config.target_uid,
+            sender.clone(),
+        ) {
+            return Ok(handle);
+        }
+        eprintln!("privileged collector unavailable, falling back to dev collector");
+    }
+
+    spawn_dev_collector(session_id, key, config.watch_paths.clone(), sender)
+}
+
+fn spawn_dev_collector(
+    session_id: String,
+    key: Vec<u8>,
+    watch_paths: Vec<PathBuf>,
+    sender: mpsc::Sender<CollectorEvent>,
+) -> io::Result<CollectorHandle> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_clone = Arc::clone(&stop);
+
+    let handle = thread::spawn(move || {
+        let mut collector = match DevCollector::new(session_id, key) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("collector init failed: {e}");
+                return;
+            }
+        };
+
+        for path in &watch_paths {
+            if let Err(e) = collector.add_watch(path) {
+                eprintln!("watch {path:?} failed: {e}");
+            }
+        }
+
+        if !watch_paths.is_empty() {
+            eprintln!("dev collector active (no uid filtering)");
+        }
+
+        while !stop_clone.load(Ordering::Relaxed) {
+            match collector.read_available() {
+                Ok(events) => {
+                    for event in events {
+                        if sender.send(event).is_err() {
+                            return;
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("collector read error: {e}");
+                    return;
+                }
+            }
+        }
+    });
+
+    Ok(CollectorHandle { stop, handle })
+}
+
+fn spawn_privileged_collector(
+    session_id: String,
+    key: Vec<u8>,
+    watch_paths: Vec<PathBuf>,
+    target_uid: u32,
+    sender: mpsc::Sender<CollectorEvent>,
+) -> io::Result<CollectorHandle> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_clone = Arc::clone(&stop);
+
+    let handle = thread::spawn(move || {
+        let mut collector = match PrivilegedCollector::new(session_id, key, target_uid) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("privileged collector init failed: {e}");
+                return;
+            }
+        };
+
+        for path in &watch_paths {
+            if let Err(e) = collector.add_watch(path) {
+                eprintln!("watch {path:?} failed: {e}");
+            }
+        }
+
+        while !stop_clone.load(Ordering::Relaxed) {
+            match collector.read_available() {
+                Ok(events) => {
+                    for event in events {
+                        if sender.send(event).is_err() {
+                            return;
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("collector read error: {e}");
+                    return;
+                }
+            }
+        }
+    });
+
+    Ok(CollectorHandle { stop, handle })
+}
+
+fn write_heartbeat(path: &Path) -> io::Result<()> {
+    let now = Utc::now().to_rfc3339();
+    std::fs::write(path, format!("{now}\n"))
+}
+
+fn watchdog_interval_from_env() -> Option<Duration> {
+    let usec = env::var("WATCHDOG_USEC").ok()?.parse::<u64>().ok()?;
+    if usec == 0 {
+        return None;
+    }
+    Some(Duration::from_micros(usec))
+}
+
+fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let config_contents = std::fs::read_to_string(config_path)?;
+    let config: DaemonConfig = toml::from_str(&config_contents)?;
+
+    let key = std::fs::read(DEFAULT_KEY_PATH)?;
+    let session_id = format!("sess-{}-{}", Utc::now().timestamp(), std::process::id());
+
+    let (sender, receiver) = mpsc::channel();
+    let collector_handle = spawn_collector(session_id, key, &config.collector, sender)?;
+
+    let mut writer = AppendWriter::new(config.writer.to_writer_config())?;
+    let alerter = Alerter::new(config.alerter);
+    let detector = detector::Detector::new();
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(SIGTERM, Arc::clone(&shutdown))?;
+    signal_hook::flag::register(SIGINT, Arc::clone(&shutdown))?;
+
+    let watchdog_interval = watchdog_interval_from_env();
+    let watchdog_tick = watchdog_interval.map(|d| d / 2).filter(|d| *d > Duration::ZERO);
+    let mut last_watchdog = Instant::now();
+
+    let _ = sd_notify::notify(false, &[NotifyState::Ready]);
+
+    let heartbeat_interval = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
+    let mut last_heartbeat = Instant::now() - heartbeat_interval;
+    if let Err(e) = write_heartbeat(Path::new(HEARTBEAT_PATH)) {
+        eprintln!("heartbeat write failed: {e}");
+    }
+
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+
+        match receiver.recv_timeout(Duration::from_millis(500)) {
+            Ok(event) => {
+                let input = event_to_detector_input(&event);
+                let alerts = detector.detect(&input);
+
+                if let Err(e) = writer.write_event(&event) {
+                    return Err(Box::new(e));
+                }
+
+                if !alerts.is_empty() {
+                    if let Err(e) = alerter.process(&event) {
+                        eprintln!("alerter error: {e}");
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+
+        let now = Instant::now();
+        if now.duration_since(last_heartbeat) >= heartbeat_interval {
+            if let Err(e) = write_heartbeat(Path::new(HEARTBEAT_PATH)) {
+                eprintln!("heartbeat write failed: {e}");
+            }
+            last_heartbeat = now;
+        }
+
+        if let Some(interval) = watchdog_tick {
+            if now.duration_since(last_watchdog) >= interval {
+                let _ = sd_notify::notify(false, &[NotifyState::Watchdog]);
+                last_watchdog = now;
+            }
+        }
+    }
+
+    collector_handle.request_stop();
+    let _ = writer.flush();
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -350,5 +646,51 @@ fn print_markdown_report(report: &DigestReport) {
             println!("- ⚠️ {}", anomaly);
         }
         println!();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_wizard_config() {
+        let config_str = r#"
+[collector]
+watch_paths = ["/home/clawdbot"]
+target_uid = 1000
+
+[writer]
+log_path = "/var/lib/.sysd/.audit/events.log"
+fsync = "periodic"
+fsync_interval = 100
+max_size_bytes = 104857600
+
+[alerter]
+min_severity = "medium"
+queue_path = "/var/lib/.sysd/.audit/alerts.queue"
+
+[[alerter.channels]]
+type = "clawdbot_wake"
+
+[[alerter.channels]]
+type = "syslog"
+facility = "local0"
+"#;
+
+        let config: DaemonConfig = toml::from_str(config_str).expect("config should parse");
+        assert_eq!(config.collector.watch_paths.len(), 1);
+        assert_eq!(config.collector.watch_paths[0], PathBuf::from("/home/clawdbot"));
+        assert_eq!(config.collector.target_uid, 1000);
+
+        let writer = config.writer.to_writer_config();
+        assert_eq!(writer.path, PathBuf::from("/var/lib/.sysd/.audit/events.log"));
+        assert_eq!(writer.max_size_bytes, 104857600);
+        match writer.fsync {
+            FsyncPolicy::Periodic(interval) => assert_eq!(interval, 100),
+            other => panic!("expected periodic fsync, got {:?}", other),
+        }
+
+        assert_eq!(config.alerter.channels.len(), 2);
     }
 }
