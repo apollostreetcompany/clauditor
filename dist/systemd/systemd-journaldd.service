@@ -28,19 +28,27 @@ RestartSec=5s
 # ========================
 # SECURITY HARDENING
 # ========================
+#
+# IMPORTANT: Many hardening options are DISABLED because they create
+# mount namespaces, which breaks fanotify event delivery!
+#
+# fanotify only receives events from processes in the SAME mount namespace.
+# If ProtectSystem=strict is enabled, the daemon runs in an isolated
+# mount namespace and will NOT receive file events from host processes.
+#
+# See: https://lkml.org/lkml/2015/10/29/268
+# See: https://lists.debian.org/debian-kernel/2017/09/msg00191.html
 
 # Prevent privilege escalation
 NoNewPrivileges=true
 
-# Filesystem protection
-ProtectSystem=strict
-ProtectHome=read-only
-PrivateTmp=true
+# !! DISABLED - creates mount namespace, breaks fanotify !!
+# ProtectSystem=strict
+# ProtectHome=read-only
+# PrivateTmp=true
+# PrivateDevices=true
 
-# Device access
-PrivateDevices=true
-
-# Kernel protection
+# Kernel protection (these don't affect mount namespace)
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
@@ -58,8 +66,8 @@ ProtectControlGroups=true
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
 AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
 
-# Namespace restrictions
-RestrictNamespaces=true
+# !! DISABLED - might interact with mount namespaces !!
+# RestrictNamespaces=true
 LockPersonality=true
 RestrictSUIDSGID=true
 

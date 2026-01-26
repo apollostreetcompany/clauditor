@@ -97,7 +97,7 @@ impl PrivilegedCollector {
         })
     }
 
-    /// Add a path to watch (marks the entire mount point).
+    /// Add a path to watch (marks the entire filesystem containing the path).
     pub fn add_watch(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
         let path = path.as_ref().to_path_buf();
         let c_path = CString::new(path.to_str().unwrap_or("")).map_err(|_| {
@@ -109,8 +109,18 @@ impl PrivilegedCollector {
         // FAN_OPEN_EXEC captures when executables are opened for execution.
         // FAN_CLOSE includes both FAN_CLOSE_WRITE and FAN_CLOSE_NOWRITE
         let mask = FAN_OPEN | FAN_CLOSE | FAN_OPEN_EXEC;
-        // Use FAN_MARK_FILESYSTEM to monitor entire filesystem, not just mount point
+        // Use FAN_MARK_FILESYSTEM instead of FAN_MARK_MOUNT.
+        // FAN_MARK_MOUNT only marks the specific mount point as seen from the current
+        // mount namespace. When running with ProtectSystem=strict, this namespace is
+        // isolated from the host, causing events from host processes to be missed.
+        // FAN_MARK_FILESYSTEM marks the entire filesystem at the kernel level,
+        // ensuring events are captured regardless of namespace boundaries.
         let flags = FAN_MARK_ADD | FAN_MARK_FILESYSTEM;
+
+        eprintln!(
+            "fanotify_mark: path={:?} flags={:#x} mask={:#x}",
+            path, flags, mask
+        );
 
         let ret = unsafe {
             libc::fanotify_mark(
@@ -123,9 +133,17 @@ impl PrivilegedCollector {
         };
 
         if ret < 0 {
-            return Err(io::Error::last_os_error());
+            let err = io::Error::last_os_error();
+            eprintln!(
+                "fanotify_mark FAILED: path={:?} error={} (errno={})",
+                path,
+                err,
+                err.raw_os_error().unwrap_or(-1)
+            );
+            return Err(err);
         }
 
+        eprintln!("fanotify_mark OK: path={:?}", path);
         self.watch_paths.insert(path);
         Ok(())
     }
@@ -141,6 +159,11 @@ impl PrivilegedCollector {
     pub fn read_available(&mut self) -> io::Result<Vec<CollectorEvent>> {
         let mut output = Vec::new();
 
+        eprintln!(
+            "fanotify read: blocking on fd={} waiting for events...",
+            self.fd.as_raw_fd()
+        );
+
         let n = unsafe {
             libc::read(
                 self.fd.as_raw_fd(),
@@ -150,8 +173,16 @@ impl PrivilegedCollector {
         };
 
         if n < 0 {
-            return Err(io::Error::last_os_error());
+            let err = io::Error::last_os_error();
+            eprintln!(
+                "fanotify read FAILED: error={} (errno={})",
+                err,
+                err.raw_os_error().unwrap_or(-1)
+            );
+            return Err(err);
         }
+
+        eprintln!("fanotify read: got {} bytes", n);
 
         let mut offset = 0usize;
         while offset + std::mem::size_of::<FanotifyEventMetadata>() <= n as usize {

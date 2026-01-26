@@ -158,13 +158,18 @@ do_install() {
     info "All commands will be shown before execution."
     echo
     
-    # Step 1: Create user
+    # Step 1: Create user and group membership
     echo
     info "Step 1: Create system user '$STEALTH_USER'"
     if id "$STEALTH_USER" &>/dev/null; then
-        info "User already exists, skipping"
+        info "User already exists, skipping creation"
     else
         run_cmd "useradd --system --shell /usr/sbin/nologin --no-create-home '$STEALTH_USER'"
+    fi
+    # Add to clawdbot group for /proc access (needed for UID detection)
+    if getent group clawdbot &>/dev/null; then
+        run_cmd "usermod -aG clawdbot '$STEALTH_USER'"
+        info "Added $STEALTH_USER to clawdbot group for /proc access"
     fi
     
     # Step 2: Create directories
@@ -196,40 +201,14 @@ do_install() {
     info "Step 5: Store binary checksum for sentinel"
     run_cmd "sha256sum '$STEALTH_BINARY' | awk '{print \$1}' > '$CONFIG_DIR/binary.sha256'"
     
-    # Step 6: Create config
+    # Step 6: Install config file
     echo
-    info "Step 6: Create config file"
+    info "Step 6: Install config file"
     if [[ -f "$CONFIG_DIR/config.toml" ]]; then
-        info "Config already exists, skipping"
+        info "Config already exists, skipping (use --force to overwrite)"
     else
-        cat > /tmp/clauditor-config.toml << 'CONFIGEOF'
-# Clauditor configuration
-
-[collector]
-# Watch paths (workspace directories to monitor)
-watch_paths = ["/home/clawdbot"]
-# Target UID to monitor (clawdbot user)
-target_uid = 1000
-
-[writer]
-log_path = "/var/lib/.sysd/.audit/events.log"
-fsync = "periodic"
-fsync_interval = 100
-max_size_bytes = 104857600  # 100MB
-
-[alerter]
-min_severity = "medium"
-queue_path = "/var/lib/.sysd/.audit/alerts.queue"
-
-[[alerter.channels]]
-type = "clawdbot_wake"
-
-[[alerter.channels]]
-type = "syslog"
-facility = "local0"
-CONFIGEOF
-        run_cmd "install -m 0640 -o root -g '$STEALTH_USER' /tmp/clauditor-config.toml '$CONFIG_DIR/config.toml'"
-        run_cmd "rm /tmp/clauditor-config.toml"
+        run_cmd "install -m 0640 -o root -g '$STEALTH_USER' '$REPO_ROOT/dist/config/default.toml' '$CONFIG_DIR/config.toml'"
+        info "NOTE: Config uses watch_paths=[\"/\", \"/home/clawdbot\"] for full exec monitoring"
     fi
     
     # Step 7: Install unit files
