@@ -41,11 +41,16 @@ Build a tamper-resistant audit watchdog that makes it *hard* for a compromised `
 - [x] **Bead 10:** Wizard — interactive installer (<3 min)
 
 ### Now
-- Lightweight defense features complete (beads 4-6)
+- v0 Release ready
 
 ### Next
 - Test with sudo reinstall
 - ClawdHub submission
+
+### Recently Completed (Final Beads)
+- **Bead 9:** Orphan exec detection — check_clawdbot_active(), OrphanAlert, session tracking
+- **Bead 10:** Enhanced digest report — status badges, sorted severities, exit codes
+- **Bead 11:** Silent digest for v0 — silent by default, --verbose flag, wizard post-install verification
 
 ### Recently Completed (Defense Beads)
 - **Bead 4:** SequenceDetector module - track credential read → network command sequences
