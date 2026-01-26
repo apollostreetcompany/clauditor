@@ -25,7 +25,7 @@ use writer::{AppendWriter, FsyncPolicy, WriterConfig};
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/sysaudit/config.toml";
 const DEFAULT_KEY_PATH: &str = "/etc/sysaudit/key";
-const HEARTBEAT_PATH: &str = "/run/sysaudit.hb";
+const HEARTBEAT_PATH: &str = "/run/sysaudit/heartbeat";
 const HEARTBEAT_INTERVAL_SECS: u64 = 10;
 
 fn default_key_path() -> PathBuf {

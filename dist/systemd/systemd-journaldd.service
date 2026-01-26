@@ -34,7 +34,7 @@ NoNewPrivileges=true
 
 # Filesystem protection
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=read-only
 PrivateTmp=true
 
 # Device access
@@ -75,8 +75,9 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LimitNOFILE=65536
 LimitNPROC=64
 
-# Read-write paths (logs)
+# Read-write paths (logs + runtime)
 ReadWritePaths=/var/lib/.sysd/.audit
+RuntimeDirectory=sysaudit
 
 # Read-only paths (config, key)
 ReadOnlyPaths=/etc/sysaudit
