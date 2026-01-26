@@ -47,8 +47,12 @@ ProtectKernelLogs=true
 ProtectControlGroups=true
 
 # User/group protection
-ProtectProc=invisible
-ProcSubset=pid
+# NOTE: ProtectProc=invisible and ProcSubset=pid were removed because
+# the daemon needs to read /proc/{pid}/status to determine the UID of
+# processes generating fanotify events. Without this, UID filtering fails
+# and all events are discarded (defaulting to UID 0).
+# ProtectProc=invisible
+# ProcSubset=pid
 
 # Restrict capabilities
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH

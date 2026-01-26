@@ -6,8 +6,11 @@ key_path = "/etc/sysaudit/key"
 
 [collector]
 # Directories to monitor for file activity
-# Add your Clawdbot workspace paths here
-watch_paths = ["/home/clawdbot"]
+# IMPORTANT: fanotify FAN_OPEN_EXEC only catches executables LOCATED in the
+# marked path, not executables RUN FROM that path. To catch when UID 1000
+# runs /usr/bin/curl, we must mark "/" to monitor system binaries.
+# The UID filter ensures we only log events from the target user.
+watch_paths = ["/", "/home/clawdbot"]
 
 # UID of the user to monitor (find with: id -u clawdbot)
 target_uid = 1000

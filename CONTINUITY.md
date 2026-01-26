@@ -22,6 +22,8 @@ Build a tamper-resistant audit watchdog that makes it *hard* for a compromised `
 3. **fanotify + eBPF** for privileged capture (inotify fallback for dev mode)
 4. **Stealth paths:** `/usr/local/sbin/systemd-journaldd`, `/var/lib/.sysd/.audit/`
 5. **Separate user:** `sysaudit` (not `clauditor`) with no login shell
+6. **Watch `/` for exec monitoring:** FAN_OPEN_EXEC only fires for files within the marked path. Must mark root `/` to catch system binary executions.
+7. **No ProtectProc=invisible:** Daemon needs to read /proc/{pid}/status to determine UID for filtering. ProtectProc/ProcSubset restrictions break this.
 
 ## State
 
@@ -39,12 +41,19 @@ Build a tamper-resistant audit watchdog that makes it *hard* for a compromised `
 - [x] **Bead 10:** Wizard — interactive installer (<3 min)
 
 ### Now
-- ✅ ALL BEADS COMPLETE (including Bead 11: Daemon main loop)
+- ✅ CRITICAL FIX: Two bugs preventing event capture
 
 ### Next
-- Create SKILL.md + README for ClawdHub
-- Integration testing on live system
+- Test fix with sudo reinstall
 - ClawdHub submission
+
+### Recently Completed
+- Bead 12: FAN_OPEN_EXEC capture
+- Bead 13: Binary watchlist filter (24 dangerous binaries)
+- Bead 14: Clawdbot-specific rules (gog, himalaya, wacli, bird)
+- **Bead 15: Critical collector fix** (two bugs found):
+  1. **ProtectProc=invisible blocked UID detection:** Daemon couldn't read `/proc/{pid}/status` for other users' processes, causing UID to default to 0 and all events to be discarded
+  2. **Wrong watch paths:** `FAN_OPEN_EXEC` only fires for executables LOCATED in marked path. Watching `/home/clawdbot` doesn't catch `/usr/bin/curl`. Fixed by adding `/` to watch_paths
 
 ## Open Questions
 - None currently
