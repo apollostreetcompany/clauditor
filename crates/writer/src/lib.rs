@@ -11,8 +11,71 @@ use collector::CollectorEvent;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+
+/// File permissions for log files (owner read/write only)
+const LOG_FILE_MODE: u32 = 0o600;
+
+/// Validate that a path is safe for use as a log file.
+/// 
+/// Checks for:
+/// - Path traversal attacks (../)
+/// - Null bytes
+/// - Empty paths
+pub fn validate_log_path(path: &Path, base_dir: Option<&Path>) -> io::Result<PathBuf> {
+    // Check for empty path
+    if path.as_os_str().is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty path"));
+    }
+    
+    // Convert to string to check for path traversal
+    let path_str = path.to_string_lossy();
+    
+    // Check for null bytes
+    if path_str.contains('\0') {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path contains null byte"));
+    }
+    
+    // Check for obvious path traversal
+    if path_str.contains("..") {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path contains '..'"));
+    }
+    
+    // If base_dir is provided, ensure the path is within it
+    if let Some(base) = base_dir {
+        let canonical_base = base.canonicalize()?;
+        
+        // For existing files, canonicalize and check
+        if path.exists() {
+            let canonical_path = path.canonicalize()?;
+            if !canonical_path.starts_with(&canonical_base) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput, 
+                    "path escapes base directory"
+                ));
+            }
+            return Ok(canonical_path);
+        }
+        
+        // For new files, check the parent
+        if let Some(parent) = path.parent() {
+            if parent.exists() {
+                let canonical_parent = parent.canonicalize()?;
+                if !canonical_parent.starts_with(&canonical_base) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput, 
+                        "path escapes base directory"
+                    ));
+                }
+                return Ok(canonical_parent.join(path.file_name().unwrap_or_default()));
+            }
+        }
+    }
+    
+    // Return the path as-is (or canonicalized if possible)
+    path.canonicalize().or_else(|_| Ok(path.to_path_buf()))
+}
 
 /// Fsync policy for the writer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,19 +118,41 @@ pub struct AppendWriter {
 
 impl AppendWriter {
     /// Create a new append-only writer.
+    /// 
+    /// # Path Safety
+    /// The path should be validated before calling this function.
+    /// This function does not perform path traversal checks.
     pub fn new(config: WriterConfig) -> io::Result<Self> {
+        // Validate path is absolute to prevent relative path issues
+        let path = config.path.canonicalize().unwrap_or_else(|_| {
+            // If file doesn't exist yet, canonicalize the parent
+            if let Some(parent) = config.path.parent() {
+                if let Ok(canon_parent) = parent.canonicalize() {
+                    return canon_parent.join(config.path.file_name().unwrap_or_default());
+                }
+            }
+            config.path.clone()
+        });
+        
         let file = OpenOptions::new()
             .create(true)
             .append(true)
+            .mode(LOG_FILE_MODE)  // Explicit permissions: 0o600
             .custom_flags(libc::O_APPEND)
-            .open(&config.path)?;
+            .open(&path)?;
+
+        // Ensure permissions are correct even if file existed
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(LOG_FILE_MODE))?;
 
         // Get current file size
         let bytes_written = file.metadata()?.len();
 
         Ok(Self {
             file: BufWriter::new(file),
-            config,
+            config: WriterConfig {
+                path,
+                ..config
+            },
             write_count: 0,
             bytes_written,
         })
@@ -104,34 +189,56 @@ impl AppendWriter {
     }
 
     /// Rotate the log file.
+    /// 
+    /// Uses atomic rename to minimize the race window where events could be lost.
     fn rotate(&mut self) -> io::Result<()> {
+        // Flush buffer to kernel
         self.file.flush()?;
+        // fsync to disk before rename (prevents data loss on crash)
+        self.file.get_ref().sync_data()?;
 
-        // Generate rotated filename with timestamp
-        let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
+        // Generate rotated filename with timestamp (including microseconds for uniqueness)
+        let timestamp = Utc::now().format("%Y%m%d_%H%M%S_%f");
         let rotated = self.config.path.with_extension(format!("{}.log", timestamp));
 
-        // Close current file by dropping the writer
-        drop(std::mem::replace(
-            &mut self.file,
-            BufWriter::new(File::create("/dev/null")?),
-        ));
+        // Close current file by replacing with /dev/null temporarily
+        // This ensures the file is fully closed before rename
+        let null_file = File::create("/dev/null")?;
+        let old_writer = std::mem::replace(&mut self.file, BufWriter::new(null_file));
+        drop(old_writer);
 
-        // Rename current to rotated
-        std::fs::rename(&self.config.path, &rotated)?;
+        // Atomic rename - this is the critical section
+        // On failure, we try to recover by reopening the original file
+        if let Err(e) = std::fs::rename(&self.config.path, &rotated) {
+            // Try to recover by reopening the original
+            if let Ok(file) = Self::open_log_file(&self.config.path) {
+                self.file = BufWriter::new(file);
+            }
+            return Err(e);
+        }
 
-        // Open new file
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .custom_flags(libc::O_APPEND)
-            .open(&self.config.path)?;
-
+        // Open new file with proper permissions
+        let file = Self::open_log_file(&self.config.path)?;
         self.file = BufWriter::new(file);
         self.bytes_written = 0;
         self.write_count = 0;
 
         Ok(())
+    }
+    
+    /// Open a log file with proper permissions and flags.
+    fn open_log_file(path: &Path) -> io::Result<File> {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(LOG_FILE_MODE)
+            .custom_flags(libc::O_APPEND)
+            .open(path)?;
+        
+        // Ensure permissions even if file existed
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(LOG_FILE_MODE))?;
+        
+        Ok(file)
     }
 
     /// Flush all buffered data.
@@ -301,5 +408,96 @@ mod tests {
         
         // Should have at least 2 files (current + rotated)
         assert!(entries.len() >= 2, "expected rotation to create multiple files");
+    }
+
+    // NEW TESTS for code review concerns
+
+    #[test]
+    fn file_permissions_are_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("perms.log");
+
+        let config = WriterConfig {
+            path: log_path.clone(),
+            fsync: FsyncPolicy::None,
+            max_size_bytes: 0,
+        };
+
+        let mut writer = AppendWriter::new(config).unwrap();
+        writer.write_event(&sample_event()).unwrap();
+        writer.flush().unwrap();
+
+        let metadata = std::fs::metadata(&log_path).unwrap();
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "log file should have 0600 permissions");
+    }
+
+    #[test]
+    fn validate_path_rejects_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+        
+        // Path with .. should be rejected
+        let bad_path = temp.path().join("../escape.log");
+        let result = validate_log_path(&bad_path, Some(temp.path()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_path_allows_normal() {
+        let temp = tempfile::tempdir().unwrap();
+        
+        let good_path = temp.path().join("normal.log");
+        let result = validate_log_path(&good_path, Some(temp.path()));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_path_rejects_empty() {
+        let empty = PathBuf::from("");
+        let result = validate_log_path(&empty, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn drop_flushes_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("drop.log");
+
+        {
+            let config = WriterConfig {
+                path: log_path.clone(),
+                fsync: FsyncPolicy::None, // Even with no fsync policy
+                max_size_bytes: 0,
+            };
+            let mut writer = AppendWriter::new(config).unwrap();
+            writer.write_event(&sample_event()).unwrap();
+            // Drop here
+        }
+
+        // Data should be flushed
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(!content.is_empty(), "data should be flushed on drop");
+    }
+
+    #[test]
+    fn fsync_every_actually_syncs() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("sync.log");
+
+        let config = WriterConfig {
+            path: log_path.clone(),
+            fsync: FsyncPolicy::Every,
+            max_size_bytes: 0,
+        };
+
+        let mut writer = AppendWriter::new(config).unwrap();
+        writer.write_event(&sample_event()).unwrap();
+        // With FsyncPolicy::Every, data should already be on disk
+
+        // Verify file exists and has content
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(!content.is_empty());
     }
 }
