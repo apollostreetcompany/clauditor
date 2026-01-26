@@ -159,11 +159,6 @@ impl PrivilegedCollector {
     pub fn read_available(&mut self) -> io::Result<Vec<CollectorEvent>> {
         let mut output = Vec::new();
 
-        eprintln!(
-            "fanotify read: blocking on fd={} waiting for events...",
-            self.fd.as_raw_fd()
-        );
-
         let n = unsafe {
             libc::read(
                 self.fd.as_raw_fd(),
@@ -182,8 +177,6 @@ impl PrivilegedCollector {
             return Err(err);
         }
 
-        eprintln!("fanotify read: got {} bytes", n);
-
         let mut offset = 0usize;
         while offset + std::mem::size_of::<FanotifyEventMetadata>() <= n as usize {
             let meta = unsafe {
@@ -199,26 +192,13 @@ impl PrivilegedCollector {
             // Read process info and filter by UID
             let proc_info = ProcInfo::from_pid(meta.pid as u32);
             let uid = proc_info.as_ref().map(|p| p.uid);
-            
-            // Debug: log what we got
-            eprintln!(
-                "fanotify event: pid={} mask={:#x} proc_info={} uid={:?}",
-                meta.pid,
-                meta.mask,
-                proc_info.is_some(),
-                uid
-            );
 
             // Filter by UID - but handle case where process already exited
             // If we can't determine UID, we must skip (can't verify it's our target user)
             let uid = match uid {
                 Some(u) => u,
                 None => {
-                    eprintln!(
-                        "fanotify event: pid={} already exited, cannot determine UID - skipping",
-                        meta.pid
-                    );
-                    // Close the event fd before continuing
+                    // Process exited before we could check UID - skip silently
                     if meta.fd >= 0 {
                         unsafe { libc::close(meta.fd) };
                     }
@@ -229,11 +209,7 @@ impl PrivilegedCollector {
 
             // Only process events from target UID
             if uid != self.target_uid {
-                eprintln!(
-                    "fanotify event: pid={} uid={} != target_uid={} - skipping",
-                    meta.pid, uid, self.target_uid
-                );
-                // Close the event fd before continuing
+                // Not our target user - skip silently
                 if meta.fd >= 0 {
                     unsafe { libc::close(meta.fd) };
                 }
@@ -252,15 +228,7 @@ impl PrivilegedCollector {
                 };
 
                 if let Some(path) = path {
-                    let kind = mask_to_kind(meta.mask);
-                    if kind.is_none() {
-                        eprintln!(
-                            "fanotify event: mask={:#x} has no matching kind, dropping (path={:?})",
-                            meta.mask,
-                            path
-                        );
-                    }
-                    if let Some(kind) = kind {
+                    if let Some(kind) = mask_to_kind(meta.mask) {
                         // Filter exec events by watchlist
                         if kind == FileEventKind::Exec && !self.exec_watchlist.is_empty() {
                             let binary_name = path

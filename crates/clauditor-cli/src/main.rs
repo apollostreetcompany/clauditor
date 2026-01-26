@@ -280,11 +280,6 @@ fn spawn_dev_collector(
         while !stop_clone.load(Ordering::Relaxed) {
             match collector.read_available() {
                 Ok(events) => {
-                    if events.is_empty() {
-                        eprintln!("dev collector read: 0 events");
-                    } else {
-                        eprintln!("dev collector read: {} events", events.len());
-                    }
                     for event in events {
                         if sender.send(event).is_err() {
                             eprintln!("dev collector send failed: receiver disconnected");
@@ -346,11 +341,6 @@ fn spawn_privileged_collector(
         while !stop_clone.load(Ordering::Relaxed) {
             match collector.read_available() {
                 Ok(events) => {
-                    if events.is_empty() {
-                        eprintln!("privileged collector read: 0 events");
-                    } else {
-                        eprintln!("privileged collector read: {} events", events.len());
-                    }
                     for event in events {
                         if sender.send(event).is_err() {
                             eprintln!("privileged collector send failed: receiver disconnected");
@@ -421,7 +411,6 @@ fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
         match receiver.recv_timeout(Duration::from_millis(500)) {
             Ok(event) => {
-                eprintln!("daemon received event: path={:?} kind={:?}", event.file.path, event.file.kind);
                 let input = event_to_detector_input(&event);
                 let alerts = detector.detect(&input);
 
@@ -429,7 +418,6 @@ fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("writer write_event failed: {e}");
                     return Err(Box::new(e));
                 }
-                eprintln!("writer wrote event");
 
                 if !alerts.is_empty() {
                     if let Err(e) = alerter.process(&event) {
