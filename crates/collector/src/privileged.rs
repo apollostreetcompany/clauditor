@@ -104,11 +104,10 @@ impl PrivilegedCollector {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid path")
         })?;
 
-        // Note: FAN_CREATE/FAN_DELETE require FAN_REPORT_DFID_NAME + FAN_MARK_FILESYSTEM
-        // which is incompatible with FAN_CLASS_CONTENT. We monitor opens/writes instead.
+        // Exec-only mode: Much lower event volume, focused on what matters most.
         // FAN_OPEN_EXEC captures when executables are opened for execution.
-        // FAN_CLOSE includes both FAN_CLOSE_WRITE and FAN_CLOSE_NOWRITE
-        let mask = FAN_OPEN | FAN_CLOSE | FAN_OPEN_EXEC;
+        // This catches command execution which is the primary attack vector.
+        let mask = FAN_OPEN_EXEC;
         // Use FAN_MARK_FILESYSTEM instead of FAN_MARK_MOUNT.
         // FAN_MARK_MOUNT only marks the specific mount point as seen from the current
         // mount namespace. When running with ProtectSystem=strict, this namespace is
