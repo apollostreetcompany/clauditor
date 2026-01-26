@@ -142,6 +142,12 @@ impl Alerter {
         let cooldown = Duration::from_secs(self.config.cooldown_secs);
         
         let mut times = self.last_alert_times.lock().unwrap();
+        let cutoff = now
+            .checked_sub_signed(
+                chrono::Duration::from_std(cooldown).unwrap_or(chrono::TimeDelta::MAX),
+            )
+            .unwrap_or(now);
+        times.retain(|_, last_time| *last_time >= cutoff);
         
         if let Some(last_time) = times.get(rule_id) {
             let elapsed = now.signed_duration_since(*last_time);
@@ -705,5 +711,27 @@ mod tests {
         for alert in &alerts {
             assert!(alert.severity >= Severity::High);
         }
+    }
+
+    #[test]
+    fn cooldown_prunes_stale_rule_ids() {
+        let config = AlerterConfig {
+            channels: vec![],
+            min_severity: Severity::Low,
+            queue_path: None,
+            cooldown_secs: 1,
+        };
+
+        let alerter = Alerter::new(config);
+        let stale_time = Utc::now() - chrono::Duration::seconds(120);
+
+        {
+            let mut times = alerter.last_alert_times.lock().unwrap();
+            times.insert("stale-rule".to_string(), stale_time);
+        }
+
+        // Trigger cooldown check to prune
+        let _ = alerter.check_cooldown("fresh-rule");
+        assert!(!alerter.last_alert_times.lock().unwrap().contains_key("stale-rule"));
     }
 }
