@@ -1,16 +1,28 @@
 //! Alerting integration for clauditor.
 //!
 //! Evaluates events against detector rules and emits alerts via configured channels.
+//!
+//! # Security Notes
+//! - File alerts use 0o600 permissions
+//! - Command channel executes user-provided commands (ensure config is trusted)
+//! - Deduplication prevents alert storms
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use collector::CollectorEvent;
 use detector::{Alert, Detector, DetectorInput, FileOp, Severity};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc;
+use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+/// File permissions for alert/queue files
+const ALERT_FILE_MODE: u32 = 0o600;
 
 /// Alert channel configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +69,14 @@ pub struct AlerterConfig {
     pub min_severity: Severity,
     /// Queue alerts when channels fail (path to queue file)
     pub queue_path: Option<PathBuf>,
+    /// Cooldown period for duplicate alerts (same rule_id)
+    /// Default: 60 seconds
+    #[serde(default = "default_cooldown_secs")]
+    pub cooldown_secs: u64,
+}
+
+fn default_cooldown_secs() -> u64 {
+    60
 }
 
 fn default_channels() -> Vec<AlertChannel> {
@@ -73,6 +93,7 @@ impl Default for AlerterConfig {
             channels: default_channels(),
             min_severity: Severity::Medium,
             queue_path: None,
+            cooldown_secs: default_cooldown_secs(),
         }
     }
 }
@@ -86,9 +107,13 @@ pub struct AlertPayload {
 }
 
 /// Alerter that evaluates events and sends alerts.
+/// 
+/// Includes deduplication via cooldown to prevent alert storms.
 pub struct Alerter {
     detector: Detector,
     config: AlerterConfig,
+    /// Tracks last alert time per rule_id for cooldown
+    last_alert_times: Mutex<HashMap<String, DateTime<Utc>>>,
 }
 
 impl Alerter {
@@ -97,26 +122,61 @@ impl Alerter {
         Self {
             detector: Detector::new(),
             config,
+            last_alert_times: Mutex::new(HashMap::new()),
         }
     }
 
     /// Create an alerter with custom detector.
     pub fn with_detector(config: AlerterConfig, detector: Detector) -> Self {
-        Self { detector, config }
+        Self { 
+            detector, 
+            config,
+            last_alert_times: Mutex::new(HashMap::new()),
+        }
+    }
+    
+    /// Check if an alert should be suppressed due to cooldown.
+    /// Returns true if the alert should be sent (not in cooldown).
+    fn check_cooldown(&self, rule_id: &str) -> bool {
+        let now = Utc::now();
+        let cooldown = Duration::from_secs(self.config.cooldown_secs);
+        
+        let mut times = self.last_alert_times.lock().unwrap();
+        
+        if let Some(last_time) = times.get(rule_id) {
+            let elapsed = now.signed_duration_since(*last_time);
+            if elapsed < chrono::Duration::from_std(cooldown).unwrap_or(chrono::TimeDelta::MAX) {
+                // Still in cooldown
+                return false;
+            }
+        }
+        
+        // Not in cooldown, update the time
+        times.insert(rule_id.to_string(), now);
+        true
     }
 
     /// Evaluate an event and send alerts if rules match.
+    /// 
+    /// Returns all alerts that matched (including those suppressed by cooldown).
+    /// Only alerts not in cooldown are actually sent.
     pub fn process(&self, event: &CollectorEvent) -> io::Result<Vec<Alert>> {
         let input = self.event_to_input(event);
         let alerts = self.detector.detect(&input);
 
-        // Filter by severity and send
+        // Filter by severity
         let filtered: Vec<_> = alerts
             .into_iter()
             .filter(|a| a.severity >= self.config.min_severity)
             .collect();
 
+        // Send alerts (respecting cooldown)
         for alert in &filtered {
+            // Check cooldown - skip if in cooldown period
+            if !self.check_cooldown(&alert.rule_id) {
+                continue;
+            }
+            
             let payload = AlertPayload {
                 timestamp: Utc::now(),
                 alert: alert.clone(),
@@ -267,7 +327,11 @@ impl Alerter {
                 let mut file = OpenOptions::new()
                     .create(true)
                     .append(true)
+                    .mode(ALERT_FILE_MODE)
                     .open(path)?;
+                
+                // Ensure permissions even if file existed
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(ALERT_FILE_MODE))?;
 
                 let json = serde_json::to_string(payload)?;
                 writeln!(file, "{}", json)?;
@@ -307,10 +371,21 @@ impl Alerter {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
+            .mode(ALERT_FILE_MODE)
             .open(queue_path)?;
+        
+        // Ensure permissions
+        std::fs::set_permissions(queue_path, std::fs::Permissions::from_mode(ALERT_FILE_MODE))?;
 
         let json = serde_json::to_string(payload)?;
         writeln!(file, "{}", json)
+    }
+    
+    /// Get the number of rule IDs currently in cooldown.
+    /// Useful for testing.
+    #[cfg(test)]
+    fn cooldown_count(&self) -> usize {
+        self.last_alert_times.lock().unwrap().len()
     }
 }
 
@@ -398,6 +473,7 @@ mod tests {
             }],
             min_severity: Severity::Low,
             queue_path: None,
+            cooldown_secs: 0, // No cooldown for tests
         };
 
         let alerter = Alerter::new(config);
@@ -441,6 +517,7 @@ mod tests {
             channels: vec![],
             min_severity: Severity::Low,
             queue_path: None,
+            cooldown_secs: 60,
         };
 
         let alerter = Alerter::new(config);
@@ -449,5 +526,184 @@ mod tests {
         // Note: This might still trigger alerts if "cat" matches any rules
         // For now, we're just checking it doesn't panic
         println!("Benign event triggered {} alerts", alerts.len());
+    }
+
+    // NEW TESTS for code review concerns
+
+    #[test]
+    fn cooldown_suppresses_duplicate_alerts() {
+        let temp = tempfile::tempdir().unwrap();
+        let alert_file = temp.path().join("alerts.log");
+
+        let config = AlerterConfig {
+            channels: vec![AlertChannel::File {
+                path: alert_file.clone(),
+            }],
+            min_severity: Severity::Low,
+            queue_path: None,
+            cooldown_secs: 3600, // 1 hour - long enough for this test
+        };
+
+        let alerter = Alerter::new(config);
+
+        // Create a suspicious event
+        let event = Event::new_genesis(
+            b"test-key",
+            Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+            123,
+            1000,
+            EventKind::Message,
+            "sess-1",
+        );
+        let suspicious_event = CollectorEvent {
+            event,
+            file: FileEvent {
+                kind: FileEventKind::Modify,
+                path: PathBuf::from("/home/user/.ssh/authorized_keys"),
+            },
+            proc: Some(ProcInfo {
+                pid: 123,
+                uid: 1000,
+                cmdline: vec![],
+                cwd: None,
+            }),
+        };
+
+        // First alert should go through
+        let alerts1 = alerter.process(&suspicious_event).unwrap();
+        assert!(!alerts1.is_empty(), "first alert should match");
+        
+        // Second identical alert should be suppressed (same rule_id in cooldown)
+        let alerts2 = alerter.process(&suspicious_event).unwrap();
+        // alerts2 will still return the matched alerts, but they won't be sent
+        
+        // Count lines in alert file - should only have 1 entry
+        let content = std::fs::read_to_string(&alert_file).unwrap();
+        let lines: Vec<_> = content.lines().collect();
+        assert_eq!(lines.len(), 1, "only first alert should be written (cooldown)");
+    }
+
+    #[test]
+    fn file_alert_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        
+        let temp = tempfile::tempdir().unwrap();
+        let alert_file = temp.path().join("secure_alerts.log");
+
+        let config = AlerterConfig {
+            channels: vec![AlertChannel::File {
+                path: alert_file.clone(),
+            }],
+            min_severity: Severity::Low,
+            queue_path: None,
+            cooldown_secs: 0, // No cooldown for this test
+        };
+
+        let alerter = Alerter::new(config);
+
+        let event = Event::new_genesis(
+            b"test-key",
+            Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+            123,
+            1000,
+            EventKind::Message,
+            "sess-1",
+        );
+        let suspicious_event = CollectorEvent {
+            event,
+            file: FileEvent {
+                kind: FileEventKind::Modify,
+                path: PathBuf::from("/home/user/.ssh/authorized_keys"),
+            },
+            proc: Some(ProcInfo {
+                pid: 123,
+                uid: 1000,
+                cmdline: vec![],
+                cwd: None,
+            }),
+        };
+
+        let _ = alerter.process(&suspicious_event);
+
+        // Check file permissions
+        if alert_file.exists() {
+            let metadata = std::fs::metadata(&alert_file).unwrap();
+            let mode = metadata.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "alert file should have 0600 permissions");
+        }
+    }
+
+    #[test]
+    fn queue_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        
+        let temp = tempfile::tempdir().unwrap();
+        let queue_file = temp.path().join("queue.log");
+
+        // Create a config with a non-working channel so alerts get queued
+        let config = AlerterConfig {
+            channels: vec![AlertChannel::Command {
+                command: "/nonexistent/command".to_string(),
+                args: vec![],
+            }],
+            min_severity: Severity::Low,
+            queue_path: Some(queue_file.clone()),
+            cooldown_secs: 0,
+        };
+
+        let alerter = Alerter::new(config);
+
+        let event = Event::new_genesis(
+            b"test-key",
+            Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+            123,
+            1000,
+            EventKind::Message,
+            "sess-1",
+        );
+        let suspicious_event = CollectorEvent {
+            event,
+            file: FileEvent {
+                kind: FileEventKind::Modify,
+                path: PathBuf::from("/home/user/.ssh/authorized_keys"),
+            },
+            proc: Some(ProcInfo {
+                pid: 123,
+                uid: 1000,
+                cmdline: vec![],
+                cwd: None,
+            }),
+        };
+
+        // This should fail and queue the alert
+        let _ = alerter.process(&suspicious_event);
+
+        // Check queue file permissions if it was created
+        if queue_file.exists() {
+            let metadata = std::fs::metadata(&queue_file).unwrap();
+            let mode = metadata.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "queue file should have 0600 permissions");
+        }
+    }
+
+    #[test]
+    fn severity_filtering() {
+        let config = AlerterConfig {
+            channels: vec![],
+            min_severity: Severity::High, // Only High and Critical
+            queue_path: None,
+            cooldown_secs: 0,
+        };
+
+        let alerter = Alerter::new(config);
+        
+        // A Low severity event should be filtered out
+        let low_event = sample_benign_event();
+        let alerts = alerter.process(&low_event).unwrap();
+        
+        // All returned alerts should be >= High severity
+        for alert in &alerts {
+            assert!(alert.severity >= Severity::High);
+        }
     }
 }
