@@ -14,6 +14,9 @@ pub use rules::*;
 pub mod sensitive;
 pub use sensitive::is_sensitive_path;
 
+pub mod sequence;
+pub use sequence::{SequenceDetector, SequenceAlert, is_network_command};
+
 /// Alert severity levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
