@@ -1,0 +1,22 @@
+# Digest service for clauditor
+# Runs daily to generate summary reports
+
+[Unit]
+Description=Journal Digest Report
+After=systemd-journaldd.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '/usr/local/sbin/systemd-journaldd digest --log /var/lib/.sysd/.audit/events.log --key /etc/sysaudit/key --since "$(date -d yesterday +%%Y-%%m-%%dT00:00:00Z)" > /var/lib/.sysd/.audit/digest-$(date +%%Y%%m%%d).md && clawdbot gateway wake --text "📊 Daily security digest generated. Check /var/lib/.sysd/.audit/digest-$(date +%%Y%%m%%d).md" --mode now'
+
+# Run as sysaudit user
+User=sysaudit
+Group=sysaudit
+
+# Security
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/.sysd/.audit
+ReadOnlyPaths=/etc/sysaudit

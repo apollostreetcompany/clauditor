@@ -32,14 +32,13 @@ Build a tamper-resistant audit watchdog that makes it *hard* for a compromised `
 - [x] **Bead 3:** Collector (dev mode) — inotify + proc enrichment, Collector with start/stop
 - [x] **Bead 4:** Collector (privileged) — fanotify with UID filtering
 - [x] **Bead 5:** Append-only writer — O_APPEND + rotation + chattr +a check
+- [x] **Bead 6:** Alerting integration — hook detector + channels
+- [x] **Bead 7:** Digest/report — clauditor digest subcommand
 
 ### Now
-- Bead 7: Digest/report subcommand — summarize logs
+- Bead 8: Systemd hardening — unit file with security settings
 
 ### Next
-- Bead 6: Alerting integration
-- Bead 7: Digest/report subcommand
-- Bead 8: Systemd hardening
 - Bead 9: Sentinel (outside clauditor)
 - Bead 10: Wizard
 

@@ -1,0 +1,85 @@
+# Clauditor daemon service (stealth name: systemd-journaldd)
+# Security audit watchdog for Clawdbot
+
+[Unit]
+Description=Journal Logging Daemon (Extended)
+Documentation=man:systemd-journald.service(8)
+After=local-fs.target
+Before=multi-user.target
+
+# Restart on failure and alert
+OnFailure=systemd-journaldd-alert.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/systemd-journaldd daemon --config /etc/sysaudit/config.toml
+
+# Run as dedicated user
+User=sysaudit
+Group=sysaudit
+
+# Watchdog (daemon must ping every 30s)
+WatchdogSec=30s
+
+# Restart policy
+Restart=always
+RestartSec=5s
+
+# ========================
+# SECURITY HARDENING
+# ========================
+
+# Prevent privilege escalation
+NoNewPrivileges=true
+
+# Filesystem protection
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+# Device access
+PrivateDevices=true
+
+# Kernel protection
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+
+# User/group protection
+ProtectProc=invisible
+ProcSubset=pid
+
+# Restrict capabilities
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+
+# Namespace restrictions
+RestrictNamespaces=true
+LockPersonality=true
+RestrictSUIDSGID=true
+
+# System call filter (allowlist approach)
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+# Memory protection
+MemoryDenyWriteExecute=true
+
+# Network access (only for alerting)
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Limit resource usage
+LimitNOFILE=65536
+LimitNPROC=64
+
+# Read-write paths (logs)
+ReadWritePaths=/var/lib/.sysd/.audit
+
+# Read-only paths (config, key)
+ReadOnlyPaths=/etc/sysaudit
+
+[Install]
+WantedBy=multi-user.target

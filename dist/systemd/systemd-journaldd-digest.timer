@@ -1,0 +1,14 @@
+# Daily digest timer for clauditor
+# Generates summary reports
+
+[Unit]
+Description=Journal Digest Timer
+After=systemd-journaldd.service
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
