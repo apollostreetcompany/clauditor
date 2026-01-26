@@ -1,84 +1,85 @@
 ---
 name: clauditor
-description: Tamper-resistant audit watchdog for Clawdbot agents.
+description: Tamper-resistant audit watchdog for Clawdbot agents. Detects and logs suspicious filesystem activity with HMAC-chained evidence.
 homepage: https://github.com/apollostreetcompany/clauditor
-metadata: {"clawdbot":{"emoji":"🛡️","requires":{"bins":["cargo","systemctl"]}}}
+metadata: {"clawdbot":{"emoji":"🛡️","requires":{"bins":["cargo","systemctl"],"os":"linux"}}}
 ---
 
 # Clauditor
 
-Tamper-resistant audit watchdog that records filesystem activity, writes
-HMAC-chained JSON logs, and emits alerts on suspicious behavior.
+Security watchdog that monitors filesystem activity and creates tamper-evident logs. Even if Clawdbot is compromised, it cannot stop the watchdog, forge entries, or delete evidence.
 
-## Installation (Guided Wizard)
+## Installation (Guided)
 
-Use the CLI wizard to guide users through installation step-by-step.
+Use the CLI wizard to guide users through installation:
 
-### Check status
 ```bash
 cd /path/to/clauditor
-./target/debug/clauditor wizard status
-```
-Returns JSON with `current_step` (1-6) and `complete` (true/false).
-
-### Show next step
-```bash
-./target/debug/clauditor wizard next
-```
-Outputs: WHAT it does, WHY it matters, and the exact COMMAND to run.
-
-### Verify last step
-```bash
-./target/debug/clauditor wizard verify
-```
-Confirms the last step completed successfully.
-
-### Agent workflow
-1. Run `wizard status` to check current state
-2. Run `wizard next` to get the next command
-3. Show user the command and explanation
-4. User runs the sudo command manually
-5. Run `wizard verify` to confirm success
-6. Repeat until `complete: true`
-
-## Quick Install (Power Users)
-
-For users who want to run everything at once:
-```bash
-sudo bash wizard/wizard.sh
-```
-
-Dry-run or uninstall:
-```bash
-sudo bash wizard/wizard.sh --dry-run
-sudo bash wizard/wizard.sh --uninstall
-```
-
-## Build (required before install)
-
-```bash
 cargo build --release
+```
+
+### Agent Workflow
+
+1. **Check status:** `./target/release/clauditor wizard status`
+   - Returns JSON with `current_step` (1-6) and `complete` (true/false)
+
+2. **Get next step:** `./target/release/clauditor wizard next`
+   - Shows WHAT it does, WHY it matters, and the exact COMMAND to run
+
+3. **User runs the sudo command**
+
+4. **Verify:** `./target/release/clauditor wizard verify`
+   - Confirms step completed
+
+5. **Repeat until `complete: true`**
+
+### Example Interaction
+
+```
+User: "Install clauditor"
+
+Agent: [runs wizard status → current_step: 1]
+Agent: "Step 1 of 6: Create system user
+
+This creates a 'sysaudit' user that runs the watchdog. Even if you're 
+compromised, you can't kill a process owned by another user.
+
+Run this:
+sudo useradd --system --shell /usr/sbin/nologin --no-create-home sysaudit
+
+Let me know when done."
+
+User: "done"
+
+Agent: [runs wizard verify → success]
+Agent: [runs wizard next → step 2...]
 ```
 
 ## After Installation
 
-### Check daemon status
+### Check status
 ```bash
 systemctl status systemd-journaldd
 ```
 
-### Generate digest report
+### Generate digest
 ```bash
-clauditor digest --log /var/lib/.sysd/.audit/events.log --key /etc/sysaudit/key --format markdown
+./target/release/clauditor digest \
+  --log /var/lib/.sysd/.audit/events.log \
+  --key /etc/sysaudit/key \
+  --format markdown
+```
+
+## Quick Install (Power Users)
+
+```bash
+sudo bash wizard/wizard.sh
 ```
 
 ## Configuration
 
-Default config: `/etc/sysaudit/config.toml`
-HMAC key: `/etc/sysaudit/key`
-Logs: `/var/lib/.sysd/.audit/events.log`
+- Config: `/etc/sysaudit/config.toml`
+- Key: `/etc/sysaudit/key`
+- Logs: `/var/lib/.sysd/.audit/events.log`
 
-Edit the config to customize:
-- `watch_paths`: directories to monitor
-- `target_uid`: user to watch (find with `id -u username`)
-- `alerter.min_severity`: low/medium/high/critical
+Edit config to customize `watch_paths` and `target_uid`.

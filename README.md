@@ -11,62 +11,90 @@ alerts when suspicious patterns are detected.
 - Rule-based detection for exfiltration, injection, persistence, tamper attempts
 - Alerting via Clawdbot wake, syslog, file, or command
 - Sentinel integrity checks with heartbeat monitoring
-- <3 minute interactive installer (wizard)
+- Interactive CLI wizard for guided installation
 
-## Repository Layout
-- `crates/schema`: Event schema and HMAC hash chain
-- `crates/collector`: File events (inotify dev mode, fanotify privileged mode)
-- `crates/detector`: Detection rules and severity scoring
-- `crates/writer`: Append-only log writer with rotation
-- `crates/alerter`: Alert dispatch and cooldowns
-- `crates/clauditor-cli`: `clauditor` CLI (daemon + digest)
-- `dist/systemd`: Hardened systemd unit files
-- `wizard/`: Interactive installer
+## Security Model
 
-## Requirements
-- Linux with systemd
-- Rust toolchain for building
-- CAP_SYS_ADMIN for privileged fanotify collection (fallback to inotify in dev mode)
-- Root access for installation (wizard)
+| Component | Owner | Permissions | Clawdbot Access |
+|-----------|-------|-------------|-----------------|
+| Daemon | sysaudit | runs as sysaudit user | ❌ Cannot kill |
+| HMAC Key | root:sysaudit | 640 | ❌ Cannot read |
+| Log Dir | sysaudit:sysaudit | 750 | ❌ Cannot write |
+| Logs | sysaudit | 640 | ✅ Can read (tamper-evident) |
 
-## Installation (Recommended)
-Use the interactive wizard:
+**Threat model:** Even if Clawdbot is fully compromised, it cannot:
+- Stop the watchdog daemon
+- Forge log entries (no key access)
+- Delete evidence (no write access to logs)
+
+## Installation
+
+### Option 1: Guided Wizard (Recommended for Clawdbot users)
+
+The CLI wizard guides you through installation step-by-step:
+
+```bash
+# Build first
+cargo build --release
+
+# Check current status
+./target/release/clauditor wizard status
+
+# Get next step (run this, follow instructions, repeat)
+./target/release/clauditor wizard next
+
+# Verify a step completed
+./target/release/clauditor wizard verify
+```
+
+### Option 2: Interactive Script (Power users)
+
 ```bash
 sudo bash wizard/wizard.sh
 ```
 
-Useful flags:
+Dry-run or uninstall:
 ```bash
 sudo bash wizard/wizard.sh --dry-run
 sudo bash wizard/wizard.sh --uninstall
 ```
 
-The wizard will:
-- Create the `sysaudit` user
-- Generate `/etc/sysaudit/key` (HMAC key)
-- Install `/usr/local/sbin/systemd-journaldd`
-- Install systemd units and timers
-- Set up `/var/lib/.sysd/.audit` with append-only log file
+## Installation Steps (Manual Reference)
 
-## Manual / Dev Run
-Build the binary:
+1. **Create system user:** `sudo useradd --system --shell /usr/sbin/nologin --no-create-home sysaudit`
+2. **Create directories:** `sudo install -d -m 0750 /etc/sysaudit && sudo install -d -m 0750 -o sysaudit -g sysaudit /var/lib/.sysd/.audit`
+3. **Generate HMAC key:** `sudo sh -c 'head -c 32 /dev/urandom | base64 > /etc/sysaudit/key && chown root:sysaudit /etc/sysaudit/key && chmod 640 /etc/sysaudit/key'`
+4. **Build and install:** `cargo build --release && sudo install -m 0755 target/release/clauditor /usr/local/sbin/systemd-journaldd`
+5. **Install config:** `sudo install -m 0640 dist/config/default.toml /etc/sysaudit/config.toml`
+6. **Start service:** `sudo cp dist/systemd/*.service dist/systemd/*.timer /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now systemd-journaldd`
+
+## Usage
+
+### Check daemon status
 ```bash
-cargo build
+systemctl status systemd-journaldd
 ```
 
-Create a local config (example below), then run:
+### Generate digest report
 ```bash
-./target/debug/clauditor daemon --config ./config.toml
+clauditor digest --log /var/lib/.sysd/.audit/events.log --key /etc/sysaudit/key --format markdown
+```
+
+### View raw logs
+```bash
+sudo cat /var/lib/.sysd/.audit/events.log | jq .
 ```
 
 ## Configuration
-Example `config.toml`:
+
+Default config location: `/etc/sysaudit/config.toml`
+
 ```toml
-# Clauditor configuration
+key_path = "/etc/sysaudit/key"
 
 [collector]
-watch_paths = ["/home/clawdbot"]
-target_uid = 1000
+watch_paths = ["/home/clawdbot"]  # Directories to monitor
+target_uid = 1000                  # User ID to watch
 
 [writer]
 log_path = "/var/lib/.sysd/.audit/events.log"
@@ -75,7 +103,7 @@ fsync_interval = 100
 max_size_bytes = 104857600  # 100MB
 
 [alerter]
-min_severity = "medium"
+min_severity = "medium"  # low, medium, high, critical
 queue_path = "/var/lib/.sysd/.audit/alerts.queue"
 
 [[alerter.channels]]
@@ -86,35 +114,21 @@ type = "syslog"
 facility = "local0"
 ```
 
-Notes:
-- `watch_paths` should include the workspaces you want to monitor.
-- `target_uid` should match the user being audited (e.g., `clawdbot`).
-- `log_path` must be absolute.
+## Repository Layout
+- `crates/schema`: Event schema and HMAC hash chain
+- `crates/collector`: File events (inotify dev mode, fanotify privileged mode)
+- `crates/detector`: Detection rules and severity scoring
+- `crates/writer`: Append-only log writer with rotation
+- `crates/alerter`: Alert dispatch and cooldowns
+- `crates/clauditor-cli`: CLI (daemon, digest, wizard)
+- `dist/config`: Default configuration
+- `dist/systemd`: Hardened systemd unit files
+- `wizard/`: Interactive installer script
 
-## Usage
-Run the daemon (default config path is `/etc/sysaudit/config.toml`):
-```bash
-clauditor daemon --config /etc/sysaudit/config.toml
-```
-
-Generate a digest report (verifies HMAC chain when key is provided):
-```bash
-clauditor digest --log /var/lib/.sysd/.audit/events.log --key /etc/sysaudit/key --format markdown
-```
-
-## Alerts
-Alert channels supported in `alerter` config:
-- `clawdbot_wake`
-- `syslog` (facility optional)
-- `file` (path required)
-- `command` (command + args)
-
-## Systemd Units
-Installed by the wizard under stealth names:
-- `systemd-journaldd.service` (daemon)
-- `systemd-journaldd-alert.service` (OnFailure alert)
-- `systemd-journaldd-digest.timer` / `.service` (daily digest)
-- `systemd-core-check.timer` / `.service` (sentinel integrity checks)
+## Requirements
+- Linux with systemd
+- Rust toolchain for building
+- Root access for installation
 
 ## Testing
 ```bash
@@ -122,4 +136,4 @@ cargo test
 ```
 
 ## License
-No LICENSE file is present yet. Add a LICENSE before distribution.
+MIT (add LICENSE file before distribution)
