@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 mod rules;
 pub use rules::*;
 
+pub mod sensitive;
+pub use sensitive::is_sensitive_path;
+
 /// Alert severity levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
