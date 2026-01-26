@@ -52,6 +52,7 @@ pub struct PrivilegedCollector {
     last_event: Option<Event>,
     target_uid: u32,
     watch_paths: HashSet<PathBuf>,
+    exec_watchlist: HashSet<String>,
 }
 
 impl PrivilegedCollector {
@@ -80,6 +81,7 @@ impl PrivilegedCollector {
             last_event: None,
             target_uid,
             watch_paths: HashSet::new(),
+            exec_watchlist: HashSet::new(),
         })
     }
 
@@ -112,6 +114,13 @@ impl PrivilegedCollector {
 
         self.watch_paths.insert(path);
         Ok(())
+    }
+
+    /// Set the list of binary names to watch for exec events.
+    /// If empty, all exec events pass through (debug mode).
+    /// If non-empty, only binaries in the watchlist generate events.
+    pub fn set_exec_watchlist(&mut self, binaries: Vec<String>) {
+        self.exec_watchlist = binaries.into_iter().collect();
     }
 
     /// Read available events (blocking).
@@ -159,6 +168,20 @@ impl PrivilegedCollector {
                 if let Some(path) = path {
                     let kind = mask_to_kind(meta.mask);
                     if let Some(kind) = kind {
+                        // Filter exec events by watchlist
+                        if kind == FileEventKind::Exec && !self.exec_watchlist.is_empty() {
+                            let binary_name = path
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string());
+                            if let Some(name) = binary_name {
+                                if !self.exec_watchlist.contains(&name) {
+                                    // Binary not in watchlist, skip this event
+                                    offset += meta.event_len as usize;
+                                    continue;
+                                }
+                            }
+                        }
+
                         let timestamp = Utc::now();
                         let pid = meta.pid as u32;
 

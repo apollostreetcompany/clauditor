@@ -41,10 +41,31 @@ struct DaemonConfig {
     alerter: alerter::AlerterConfig,
 }
 
+fn default_exec_watchlist() -> Vec<String> {
+    vec![
+        // Network exfiltration
+        "curl".to_string(), "wget".to_string(), "scp".to_string(), "rsync".to_string(),
+        "nc".to_string(), "ncat".to_string(), "netcat".to_string(),
+        "ssh".to_string(), "sftp".to_string(), "ftp".to_string(),
+        // Clawdbot-specific messaging
+        "gog".to_string(), "himalaya".to_string(), "wacli".to_string(), "bird".to_string(),
+        "sendmail".to_string(), "mail".to_string(),
+        // Interpreters (watch for -c patterns)
+        "python".to_string(), "python3".to_string(), "ruby".to_string(),
+        "perl".to_string(), "node".to_string(),
+        // Shells (watch for -c patterns)
+        "bash".to_string(), "sh".to_string(), "zsh".to_string(),
+        // Encoding/obfuscation
+        "base64".to_string(),
+    ]
+}
+
 #[derive(Debug, Deserialize)]
 struct CollectorConfig {
     watch_paths: Vec<PathBuf>,
     target_uid: u32,
+    #[serde(default = "default_exec_watchlist")]
+    exec_watchlist: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -206,6 +227,7 @@ fn spawn_collector(
             key.clone(),
             config.watch_paths.clone(),
             config.target_uid,
+            config.exec_watchlist.clone(),
             sender.clone(),
         ) {
             Ok(handle) => {
@@ -286,6 +308,7 @@ fn spawn_privileged_collector(
     key: Vec<u8>,
     watch_paths: Vec<PathBuf>,
     target_uid: u32,
+    exec_watchlist: Vec<String>,
     sender: mpsc::Sender<CollectorEvent>,
 ) -> io::Result<CollectorHandle> {
     let stop = Arc::new(AtomicBool::new(false));
@@ -299,6 +322,14 @@ fn spawn_privileged_collector(
                 return;
             }
         };
+
+        // Set exec watchlist for filtering FAN_OPEN_EXEC events
+        if !exec_watchlist.is_empty() {
+            eprintln!("exec watchlist: {} binaries", exec_watchlist.len());
+            collector.set_exec_watchlist(exec_watchlist);
+        } else {
+            eprintln!("exec watchlist: empty (all binaries will be logged)");
+        }
 
         for path in &watch_paths {
             if let Err(e) = collector.add_watch(path) {
@@ -1062,6 +1093,27 @@ facility = "local0"
         assert_eq!(config.collector.watch_paths.len(), 1);
         assert_eq!(config.collector.watch_paths[0], PathBuf::from("/home/clawdbot"));
         assert_eq!(config.collector.target_uid, 1000);
+        // Should have default exec_watchlist
+        assert!(!config.collector.exec_watchlist.is_empty());
+        assert!(config.collector.exec_watchlist.contains(&"curl".to_string()));
+
+        // Test explicit exec_watchlist
+        let config_with_watchlist = r#"
+[collector]
+watch_paths = ["/home/clawdbot"]
+target_uid = 1000
+exec_watchlist = ["curl", "wget", "custom_tool"]
+
+[writer]
+log_path = "/tmp/test.log"
+
+[alerter]
+min_severity = "medium"
+queue_path = "/tmp/alerts.queue"
+"#;
+        let config2: DaemonConfig = toml::from_str(config_with_watchlist).expect("config should parse");
+        assert_eq!(config2.collector.exec_watchlist.len(), 3);
+        assert!(config2.collector.exec_watchlist.contains(&"custom_tool".to_string()));
 
         let writer = config.writer.to_writer_config();
         assert_eq!(writer.path, PathBuf::from("/var/lib/.sysd/.audit/events.log"));
