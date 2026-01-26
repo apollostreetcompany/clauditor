@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 // fanotify constants (from linux headers)
 const FAN_CLASS_NOTIF: libc::c_uint = 0x00;  // Notification only (non-blocking)
+#[allow(dead_code)]
 const FAN_CLASS_CONTENT: libc::c_uint = 0x04;  // Permission decisions (we don't use this)
 const FAN_UNLIMITED_QUEUE: libc::c_uint = 0x10;
 const FAN_UNLIMITED_MARKS: libc::c_uint = 0x20;
@@ -22,6 +23,8 @@ const FAN_MARK_MOUNT: libc::c_uint = 0x10;
 
 const FAN_OPEN: u64 = 0x20;
 const FAN_CLOSE_WRITE: u64 = 0x08;
+const FAN_CLOSE_NOWRITE: u64 = 0x10;
+const FAN_CLOSE: u64 = FAN_CLOSE_WRITE | FAN_CLOSE_NOWRITE;
 const FAN_OPEN_EXEC: u64 = 0x00001000;
 const FAN_CREATE: u64 = 0x100;
 const FAN_DELETE: u64 = 0x200;
@@ -98,7 +101,8 @@ impl PrivilegedCollector {
         // Note: FAN_CREATE/FAN_DELETE require FAN_REPORT_DFID_NAME + FAN_MARK_FILESYSTEM
         // which is incompatible with FAN_CLASS_CONTENT. We monitor opens/writes instead.
         // FAN_OPEN_EXEC captures when executables are opened for execution.
-        let mask = FAN_OPEN | FAN_CLOSE_WRITE | FAN_OPEN_EXEC;
+        // FAN_CLOSE includes both FAN_CLOSE_WRITE and FAN_CLOSE_NOWRITE
+        let mask = FAN_OPEN | FAN_CLOSE | FAN_OPEN_EXEC;
         let flags = FAN_MARK_ADD | FAN_MARK_MOUNT;
 
         let ret = unsafe {
@@ -186,7 +190,21 @@ impl PrivilegedCollector {
             };
 
             // Only process events from target UID
-            if uid == self.target_uid {
+            if uid != self.target_uid {
+                eprintln!(
+                    "fanotify event: pid={} uid={} != target_uid={} - skipping",
+                    meta.pid, uid, self.target_uid
+                );
+                // Close the event fd before continuing
+                if meta.fd >= 0 {
+                    unsafe { libc::close(meta.fd) };
+                }
+                offset += meta.event_len as usize;
+                continue;
+            }
+
+            // Process events from target UID
+            {
                 // Get the path from /proc/self/fd/N
                 let path = if meta.fd >= 0 {
                     let fd_path = format!("/proc/self/fd/{}", meta.fd);
@@ -295,6 +313,10 @@ fn mask_to_kind(mask: u64) -> Option<FileEventKind> {
     }
     if mask & FAN_CLOSE_WRITE != 0 {
         return Some(FileEventKind::Modify);
+    }
+    // FAN_OPEN or FAN_CLOSE_NOWRITE = file was accessed but not modified
+    if mask & FAN_OPEN != 0 || mask & FAN_CLOSE_NOWRITE != 0 {
+        return Some(FileEventKind::Access);
     }
     None
 }

@@ -31,6 +31,8 @@ pub enum FileEventKind {
     Delete,
     /// Executable opened for execution (FAN_OPEN_EXEC)
     Exec,
+    /// File accessed (opened or closed without modification)
+    Access,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

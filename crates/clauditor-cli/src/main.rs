@@ -690,6 +690,7 @@ fn event_to_detector_input(event: &CollectorEvent) -> detector::DetectorInput {
         collector::FileEventKind::Create => detector::FileOp::Write,
         collector::FileEventKind::Modify => detector::FileOp::Write,
         collector::FileEventKind::Delete => detector::FileOp::Unlink,
+        collector::FileEventKind::Access => detector::FileOp::Open,
         collector::FileEventKind::Exec => unreachable!("handled above"),
     };
 

@@ -249,6 +249,7 @@ impl Alerter {
             collector::FileEventKind::Create => FileOp::Write,
             collector::FileEventKind::Modify => FileOp::Write,
             collector::FileEventKind::Delete => FileOp::Unlink,
+            collector::FileEventKind::Access => FileOp::Open,
             collector::FileEventKind::Exec => unreachable!("handled above"),
         };
 
