@@ -11,7 +11,8 @@ use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
 // fanotify constants (from linux headers)
-const FAN_CLASS_CONTENT: libc::c_uint = 0x04;
+const FAN_CLASS_NOTIF: libc::c_uint = 0x00;  // Notification only (non-blocking)
+const FAN_CLASS_CONTENT: libc::c_uint = 0x04;  // Permission decisions (we don't use this)
 const FAN_UNLIMITED_QUEUE: libc::c_uint = 0x10;
 const FAN_UNLIMITED_MARKS: libc::c_uint = 0x20;
 const FAN_CLOEXEC: libc::c_uint = 0x01;
@@ -63,7 +64,9 @@ impl PrivilegedCollector {
         key: Vec<u8>,
         target_uid: u32,
     ) -> io::Result<Self> {
-        let flags = FAN_CLASS_CONTENT | FAN_UNLIMITED_QUEUE | FAN_UNLIMITED_MARKS | FAN_CLOEXEC;
+        // Use FAN_CLASS_NOTIF for pure monitoring (non-blocking)
+        // FAN_CLASS_CONTENT would require responding to permission requests
+        let flags = FAN_CLASS_NOTIF | FAN_UNLIMITED_QUEUE | FAN_UNLIMITED_MARKS | FAN_CLOEXEC;
         let event_flags = libc::O_RDONLY | libc::O_LARGEFILE;
 
         let fd = unsafe { libc::fanotify_init(flags, event_flags as u32) };
@@ -153,7 +156,34 @@ impl PrivilegedCollector {
 
             // Read process info and filter by UID
             let proc_info = ProcInfo::from_pid(meta.pid as u32);
-            let uid = proc_info.as_ref().map(|p| p.uid).unwrap_or(0);
+            let uid = proc_info.as_ref().map(|p| p.uid);
+            
+            // Debug: log what we got
+            eprintln!(
+                "fanotify event: pid={} mask={:#x} proc_info={} uid={:?}",
+                meta.pid,
+                meta.mask,
+                proc_info.is_some(),
+                uid
+            );
+
+            // Filter by UID - but handle case where process already exited
+            // If we can't determine UID, we must skip (can't verify it's our target user)
+            let uid = match uid {
+                Some(u) => u,
+                None => {
+                    eprintln!(
+                        "fanotify event: pid={} already exited, cannot determine UID - skipping",
+                        meta.pid
+                    );
+                    // Close the event fd before continuing
+                    if meta.fd >= 0 {
+                        unsafe { libc::close(meta.fd) };
+                    }
+                    offset += meta.event_len as usize;
+                    continue;
+                }
+            };
 
             // Only process events from target UID
             if uid == self.target_uid {
@@ -167,6 +197,13 @@ impl PrivilegedCollector {
 
                 if let Some(path) = path {
                     let kind = mask_to_kind(meta.mask);
+                    if kind.is_none() {
+                        eprintln!(
+                            "fanotify event: mask={:#x} has no matching kind, dropping (path={:?})",
+                            meta.mask,
+                            path
+                        );
+                    }
                     if let Some(kind) = kind {
                         // Filter exec events by watchlist
                         if kind == FileEventKind::Exec && !self.exec_watchlist.is_empty() {
@@ -231,7 +268,7 @@ impl PrivilegedCollector {
     /// Returns (available, error_if_any) for diagnostics.
     pub fn is_available() -> bool {
         let fd = unsafe {
-            libc::fanotify_init(FAN_CLASS_CONTENT | FAN_CLOEXEC, libc::O_RDONLY as u32)
+            libc::fanotify_init(FAN_CLASS_NOTIF | FAN_CLOEXEC, libc::O_RDONLY as u32)
         };
         if fd >= 0 {
             unsafe { libc::close(fd) };
