@@ -730,10 +730,12 @@ fn get_wizard_steps() -> Vec<WizardStep> {
         WizardStep {
             number: 2,
             name: "Create directories",
-            what: "Create config directory (/etc/sysaudit) and log directory (/var/lib/.sysd/.audit)",
+            what: "Create config directory (/etc/sysaudit) and log directory (/var/lib/.sysd/.audit) with correct ownership",
             why: "Clauditor needs secure directories for its configuration and tamper-evident logs. \
+                  The log directory is owned by sysaudit so the daemon can write to it. \
                   The hidden paths (.sysd/.audit) make it harder for attackers to find and target.",
-            command: "sudo install -d -m 0750 /etc/sysaudit /var/lib/.sysd/.audit",
+            command: "sudo install -d -m 0750 /etc/sysaudit && \
+sudo install -d -m 0750 -o sysaudit -g sysaudit /var/lib/.sysd/.audit",
             check: || {
                 Path::new("/etc/sysaudit").is_dir() && Path::new("/var/lib/.sysd/.audit").is_dir()
             },
@@ -744,8 +746,9 @@ fn get_wizard_steps() -> Vec<WizardStep> {
             what: "Generate a cryptographic key for tamper-evident logging",
             why: "Every log entry is signed with this key using HMAC-SHA256. If anyone modifies \
                   or deletes log entries, the chain breaks and tampering is detected. The key is \
-                  root-owned so Clawdbot cannot forge entries.",
-            command: "sudo sh -c 'head -c 32 /dev/urandom | base64 > /etc/sysaudit/key && chmod 600 /etc/sysaudit/key'",
+                  owned by root but readable by sysaudit (the daemon user). Clawdbot cannot read it.",
+            command: "sudo sh -c 'head -c 32 /dev/urandom | base64 > /etc/sysaudit/key && \
+chown root:sysaudit /etc/sysaudit/key && chmod 640 /etc/sysaudit/key'",
             check: || Path::new("/etc/sysaudit/key").exists(),
         },
         WizardStep {

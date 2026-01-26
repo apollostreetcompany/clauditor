@@ -171,7 +171,7 @@ do_install() {
     echo
     info "Step 2: Create directories"
     run_cmd "install -d -m 0750 -o root -g root '$CONFIG_DIR'"
-    run_cmd "install -d -m 0750 -o root -g root '$LOG_DIR'"
+    run_cmd "install -d -m 0750 -o '$STEALTH_USER' -g '$STEALTH_USER' '$LOG_DIR'"
     
     # Step 3: Generate HMAC key
     echo
@@ -179,9 +179,9 @@ do_install() {
     if [[ -f "$CONFIG_DIR/key" ]]; then
         info "Key already exists, skipping"
     else
-        run_cmd "head -c 32 /dev/urandom | xxd -p > '$CONFIG_DIR/key'"
-        run_cmd "chmod 0440 '$CONFIG_DIR/key'"
+        run_cmd "head -c 32 /dev/urandom | base64 > '$CONFIG_DIR/key'"
         run_cmd "chown root:'$STEALTH_USER' '$CONFIG_DIR/key'"
+        run_cmd "chmod 0640 '$CONFIG_DIR/key'"
     fi
     
     # Step 4: Install binaries
