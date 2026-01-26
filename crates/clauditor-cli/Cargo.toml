@@ -20,3 +20,6 @@ alerter = { path = "../alerter" }
 sd-notify = "0.4"
 signal-hook = "0.3"
 toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
