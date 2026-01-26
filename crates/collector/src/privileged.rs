@@ -19,7 +19,13 @@ const FAN_UNLIMITED_MARKS: libc::c_uint = 0x20;
 const FAN_CLOEXEC: libc::c_uint = 0x01;
 
 const FAN_MARK_ADD: libc::c_uint = 0x01;
+#[allow(dead_code)]
 const FAN_MARK_MOUNT: libc::c_uint = 0x10;
+// FAN_MARK_FILESYSTEM (Linux 4.20+) marks the entire filesystem, not just a mount.
+// This is crucial when running in a mount namespace (e.g., with ProtectSystem=strict)
+// because FAN_MARK_MOUNT would only mark the mount as seen from inside the namespace,
+// missing events from processes in the parent namespace.
+const FAN_MARK_FILESYSTEM: libc::c_uint = 0x100;
 
 const FAN_OPEN: u64 = 0x20;
 const FAN_CLOSE_WRITE: u64 = 0x08;
@@ -103,7 +109,8 @@ impl PrivilegedCollector {
         // FAN_OPEN_EXEC captures when executables are opened for execution.
         // FAN_CLOSE includes both FAN_CLOSE_WRITE and FAN_CLOSE_NOWRITE
         let mask = FAN_OPEN | FAN_CLOSE | FAN_OPEN_EXEC;
-        let flags = FAN_MARK_ADD | FAN_MARK_MOUNT;
+        // Use FAN_MARK_FILESYSTEM to monitor entire filesystem, not just mount point
+        let flags = FAN_MARK_ADD | FAN_MARK_FILESYSTEM;
 
         let ret = unsafe {
             libc::fanotify_mark(
