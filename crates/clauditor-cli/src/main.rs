@@ -128,6 +128,26 @@ enum Commands {
         #[arg(long)]
         until: Option<String>,
     },
+    /// Guided installation wizard (agent-friendly)
+    Wizard {
+        #[command(subcommand)]
+        action: WizardAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum WizardAction {
+    /// Check current installation status (JSON output)
+    Status,
+    /// Show the next step to complete
+    Next,
+    /// Verify the most recent step completed successfully
+    Verify,
+    /// Show details for a specific step
+    Step {
+        /// Step number (1-6)
+        number: u8,
+    },
 }
 
 fn main() {
@@ -148,6 +168,12 @@ fn main() {
             until,
         } => {
             if let Err(e) = run_digest(&log, key.as_deref(), &format, since, until) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Wizard { action } => {
+            if let Err(e) = run_wizard(action) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
@@ -654,6 +680,286 @@ fn print_markdown_report(report: &DigestReport) {
         println!();
     }
 }
+
+// ============================================================================
+// WIZARD - Guided Installation
+// ============================================================================
+
+const TOTAL_STEPS: u8 = 6;
+
+#[derive(Debug, Serialize)]
+struct WizardStatus {
+    steps: Vec<StepStatus>,
+    current_step: u8,
+    complete: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct StepStatus {
+    step: u8,
+    name: String,
+    done: bool,
+}
+
+struct WizardStep {
+    number: u8,
+    name: &'static str,
+    what: &'static str,
+    why: &'static str,
+    command: &'static str,
+    check: fn() -> bool,
+}
+
+fn get_wizard_steps() -> Vec<WizardStep> {
+    vec![
+        WizardStep {
+            number: 1,
+            name: "Create system user",
+            what: "Create a dedicated 'sysaudit' user that will run the watchdog daemon",
+            why: "The watchdog runs as a separate user so that even if Clawdbot is compromised, \
+                  it cannot kill or manipulate the audit daemon. This is the core security model.",
+            command: "sudo useradd --system --shell /usr/sbin/nologin --no-create-home sysaudit",
+            check: || {
+                std::process::Command::new("id")
+                    .arg("sysaudit")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            },
+        },
+        WizardStep {
+            number: 2,
+            name: "Create directories",
+            what: "Create config directory (/etc/sysaudit) and log directory (/var/lib/.sysd/.audit)",
+            why: "Clauditor needs secure directories for its configuration and tamper-evident logs. \
+                  The hidden paths (.sysd/.audit) make it harder for attackers to find and target.",
+            command: "sudo install -d -m 0750 /etc/sysaudit /var/lib/.sysd/.audit",
+            check: || {
+                Path::new("/etc/sysaudit").is_dir() && Path::new("/var/lib/.sysd/.audit").is_dir()
+            },
+        },
+        WizardStep {
+            number: 3,
+            name: "Generate HMAC key",
+            what: "Generate a cryptographic key for tamper-evident logging",
+            why: "Every log entry is signed with this key using HMAC-SHA256. If anyone modifies \
+                  or deletes log entries, the chain breaks and tampering is detected. The key is \
+                  root-owned so Clawdbot cannot forge entries.",
+            command: "sudo sh -c 'head -c 32 /dev/urandom | base64 > /etc/sysaudit/key && chmod 600 /etc/sysaudit/key'",
+            check: || Path::new("/etc/sysaudit/key").exists(),
+        },
+        WizardStep {
+            number: 4,
+            name: "Build and install binary",
+            what: "Compile Clauditor and install it as a system binary",
+            why: "The binary is installed to /usr/local/sbin with a stealth name (systemd-journaldd) \
+                  so it blends in with other system services and is harder to identify as a watchdog.",
+            command: "cargo build --release && sudo install -m 0755 target/release/clauditor /usr/local/sbin/systemd-journaldd",
+            check: || Path::new("/usr/local/sbin/systemd-journaldd").exists(),
+        },
+        WizardStep {
+            number: 5,
+            name: "Install configuration",
+            what: "Install the default configuration file",
+            why: "The config tells Clauditor which directories to watch, where to write logs, \
+                  and how to send alerts. You can customize it later.",
+            command: "sudo install -m 0640 dist/config/default.toml /etc/sysaudit/config.toml",
+            check: || Path::new("/etc/sysaudit/config.toml").exists(),
+        },
+        WizardStep {
+            number: 6,
+            name: "Install and start service",
+            what: "Install systemd unit files and start the watchdog daemon",
+            why: "The daemon runs continuously in the background, watching for suspicious activity. \
+                  Systemd will automatically restart it if it crashes and start it on boot.",
+            command: "sudo cp dist/systemd/*.service dist/systemd/*.timer /etc/systemd/system/ && \
+sudo systemctl daemon-reload && \
+sudo systemctl enable systemd-journaldd && \
+sudo systemctl start systemd-journaldd",
+            check: || {
+                std::process::Command::new("systemctl")
+                    .args(["is-active", "systemd-journaldd"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            },
+        },
+    ]
+}
+
+fn run_wizard(action: WizardAction) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        WizardAction::Status => wizard_status(),
+        WizardAction::Next => wizard_next(),
+        WizardAction::Verify => wizard_verify(),
+        WizardAction::Step { number } => wizard_step(number),
+    }
+}
+
+fn wizard_status() -> Result<(), Box<dyn std::error::Error>> {
+    let steps = get_wizard_steps();
+    let mut status_steps = Vec::new();
+    let mut current_step = TOTAL_STEPS + 1; // All done if we don't find an incomplete step
+
+    for step in &steps {
+        let done = (step.check)();
+        if !done && current_step > step.number {
+            current_step = step.number;
+        }
+        status_steps.push(StepStatus {
+            step: step.number,
+            name: step.name.to_string(),
+            done,
+        });
+    }
+
+    let complete = current_step > TOTAL_STEPS;
+    if complete {
+        current_step = 0;
+    }
+
+    let status = WizardStatus {
+        steps: status_steps,
+        current_step,
+        complete,
+    };
+
+    println!("{}", serde_json::to_string_pretty(&status)?);
+    Ok(())
+}
+
+fn wizard_next() -> Result<(), Box<dyn std::error::Error>> {
+    let steps = get_wizard_steps();
+
+    // Find first incomplete step
+    for step in &steps {
+        if !(step.check)() {
+            print_step_instructions(step);
+            return Ok(());
+        }
+    }
+
+    // All done!
+    println!("🎉 INSTALLATION COMPLETE!");
+    println!();
+    println!("Clauditor is now running and protecting your system.");
+    println!();
+    println!("Useful commands:");
+    println!("  Check status:  systemctl status systemd-journaldd");
+    println!("  View logs:     sudo journalctl -u systemd-journaldd -f");
+    println!("  Run digest:    clauditor digest --log /var/lib/.sysd/.audit/events.log --key /etc/sysaudit/key");
+    Ok(())
+}
+
+fn wizard_verify() -> Result<(), Box<dyn std::error::Error>> {
+    let steps = get_wizard_steps();
+
+    // Find first incomplete step
+    for step in &steps {
+        if !(step.check)() {
+            if step.number == 1 {
+                println!("❌ Step {} is not complete yet.", step.number);
+                println!();
+                println!("Run `clauditor wizard next` to see the instructions.");
+            } else {
+                // Check if previous step is done
+                let prev_done = steps.iter().find(|s| s.number == step.number - 1)
+                    .map(|s| (s.check)())
+                    .unwrap_or(true);
+                
+                if prev_done {
+                    println!("❌ Step {} ({}) is not complete.", step.number, step.name);
+                    println!();
+                    println!("The command may have failed. Try running it again:");
+                    println!();
+                    println!("  {}", step.command);
+                } else {
+                    println!("❌ Step {} is not complete yet.", step.number - 1);
+                }
+            }
+            return Ok(());
+        }
+    }
+
+    // Find the last completed step
+    let last_done = steps.iter().rev().find(|s| (s.check)());
+    if let Some(step) = last_done {
+        if step.number == TOTAL_STEPS {
+            println!("✅ All steps complete! Clauditor is installed and running.");
+        } else {
+            println!("✅ Step {} ({}) verified!", step.number, step.name);
+            println!();
+            println!("Run `clauditor wizard next` for the next step.");
+        }
+    }
+
+    Ok(())
+}
+
+fn wizard_step(number: u8) -> Result<(), Box<dyn std::error::Error>> {
+    if number < 1 || number > TOTAL_STEPS {
+        return Err(format!("Invalid step number. Must be 1-{}", TOTAL_STEPS).into());
+    }
+
+    let steps = get_wizard_steps();
+    let step = steps.iter().find(|s| s.number == number).unwrap();
+    print_step_instructions(step);
+    Ok(())
+}
+
+fn print_step_instructions(step: &WizardStep) {
+    let done = (step.check)();
+    let status = if done { "✅ DONE" } else { "⏳ PENDING" };
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  STEP {} of {}: {}  [{}]", step.number, TOTAL_STEPS, step.name, status);
+    println!("═══════════════════════════════════════════════════════════════");
+    println!();
+    println!("WHAT THIS DOES:");
+    println!("  {}", step.what);
+    println!();
+    println!("WHY IT MATTERS:");
+    for line in textwrap_simple(step.why, 70) {
+        println!("  {}", line);
+    }
+    println!();
+    println!("COMMAND TO RUN:");
+    println!("┌─────────────────────────────────────────────────────────────────┐");
+    for line in step.command.lines() {
+        println!("│  {}│", format!("{:<63}", line.trim()));
+    }
+    println!("└─────────────────────────────────────────────────────────────────┘");
+    println!();
+    if !done {
+        println!("Copy the command above, paste it into your terminal, and press Enter.");
+        println!("When done, run: clauditor wizard verify");
+    }
+}
+
+fn textwrap_simple(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+
+    for word in text.split_whitespace() {
+        if current_line.is_empty() {
+            current_line = word.to_string();
+        } else if current_line.len() + 1 + word.len() <= width {
+            current_line.push(' ');
+            current_line.push_str(word);
+        } else {
+            lines.push(current_line);
+            current_line = word.to_string();
+        }
+    }
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+    lines
+}
+
+// ============================================================================
+// TESTS
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
