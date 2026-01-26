@@ -81,6 +81,48 @@ pub fn default_exec_rules() -> Vec<ExecRule> {
             },
         },
 
+        // === CLAWDBOT-SPECIFIC EXFIL ===
+        ExecRule {
+            id: "exfil-gog-mail".to_string(),
+            description: "gog mail command (email exfiltration)".to_string(),
+            severity: Severity::Critical,
+            category: Category::Exfil,
+            match_type: ExecMatch::CommandAndArgv {
+                comm: Regex::new(r"^gog$").unwrap(),
+                argv: Regex::new(r"\bmail\s+(send|compose)").unwrap(),
+            },
+        },
+        ExecRule {
+            id: "exfil-himalaya".to_string(),
+            description: "himalaya email client (email exfiltration)".to_string(),
+            severity: Severity::Critical,
+            category: Category::Exfil,
+            match_type: ExecMatch::CommandAndArgv {
+                comm: Regex::new(r"^himalaya$").unwrap(),
+                argv: Regex::new(r"\b(send|write|reply|forward)").unwrap(),
+            },
+        },
+        ExecRule {
+            id: "exfil-wacli".to_string(),
+            description: "wacli WhatsApp CLI (message exfiltration)".to_string(),
+            severity: Severity::Critical,
+            category: Category::Exfil,
+            match_type: ExecMatch::CommandAndArgv {
+                comm: Regex::new(r"^wacli$").unwrap(),
+                argv: Regex::new(r"\b(send|message)").unwrap(),
+            },
+        },
+        ExecRule {
+            id: "exfil-bird".to_string(),
+            description: "bird Twitter/X CLI (social media exfil)".to_string(),
+            severity: Severity::High,
+            category: Category::Exfil,
+            match_type: ExecMatch::CommandAndArgv {
+                comm: Regex::new(r"^bird$").unwrap(),
+                argv: Regex::new(r"\b(post|tweet|send|dm)").unwrap(),
+            },
+        },
+
         // === INJECTION ===
         ExecRule {
             id: "inject-bash-c".to_string(),

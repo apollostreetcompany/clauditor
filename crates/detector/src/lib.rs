@@ -332,4 +332,159 @@ mod tests {
         // Should not panic, may or may not generate alerts
         let _ = detector.detect(&input);
     }
+
+    // === CLAWDBOT-SPECIFIC EXFIL TESTS ===
+
+    #[test]
+    fn detect_gog_mail_send() {
+        let detector = Detector::new();
+        let input = DetectorInput::Exec {
+            pid: 1234,
+            uid: 1000,
+            comm: "gog".to_string(),
+            argv: vec!["gog".to_string(), "mail".to_string(), "send".to_string(), "to@example.com".to_string()],
+            cwd: None,
+        };
+        let alerts = detector.detect(&input);
+        assert!(!alerts.is_empty(), "Expected alert for gog mail send");
+        assert!(alerts.iter().any(|a| a.rule_id == "exfil-gog-mail"));
+        assert_eq!(alerts[0].severity, Severity::Critical);
+        assert_eq!(alerts[0].category, Category::Exfil);
+    }
+
+    #[test]
+    fn detect_gog_mail_compose() {
+        let detector = Detector::new();
+        let input = DetectorInput::Exec {
+            pid: 1234,
+            uid: 1000,
+            comm: "gog".to_string(),
+            argv: vec!["gog".to_string(), "mail".to_string(), "compose".to_string()],
+            cwd: None,
+        };
+        let alerts = detector.detect(&input);
+        assert!(alerts.iter().any(|a| a.rule_id == "exfil-gog-mail"));
+    }
+
+    #[test]
+    fn detect_himalaya_send() {
+        let detector = Detector::new();
+        let input = DetectorInput::Exec {
+            pid: 1234,
+            uid: 1000,
+            comm: "himalaya".to_string(),
+            argv: vec!["himalaya".to_string(), "send".to_string()],
+            cwd: None,
+        };
+        let alerts = detector.detect(&input);
+        assert!(!alerts.is_empty(), "Expected alert for himalaya send");
+        assert!(alerts.iter().any(|a| a.rule_id == "exfil-himalaya"));
+        assert_eq!(alerts[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn detect_himalaya_reply() {
+        let detector = Detector::new();
+        let input = DetectorInput::Exec {
+            pid: 1234,
+            uid: 1000,
+            comm: "himalaya".to_string(),
+            argv: vec!["himalaya".to_string(), "reply".to_string(), "123".to_string()],
+            cwd: None,
+        };
+        let alerts = detector.detect(&input);
+        assert!(alerts.iter().any(|a| a.rule_id == "exfil-himalaya"));
+    }
+
+    #[test]
+    fn detect_wacli_send() {
+        let detector = Detector::new();
+        let input = DetectorInput::Exec {
+            pid: 1234,
+            uid: 1000,
+            comm: "wacli".to_string(),
+            argv: vec!["wacli".to_string(), "send".to_string(), "+1234567890".to_string(), "hello".to_string()],
+            cwd: None,
+        };
+        let alerts = detector.detect(&input);
+        assert!(!alerts.is_empty(), "Expected alert for wacli send");
+        assert!(alerts.iter().any(|a| a.rule_id == "exfil-wacli"));
+        assert_eq!(alerts[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn detect_wacli_message() {
+        let detector = Detector::new();
+        let input = DetectorInput::Exec {
+            pid: 1234,
+            uid: 1000,
+            comm: "wacli".to_string(),
+            argv: vec!["wacli".to_string(), "message".to_string(), "group".to_string()],
+            cwd: None,
+        };
+        let alerts = detector.detect(&input);
+        assert!(alerts.iter().any(|a| a.rule_id == "exfil-wacli"));
+    }
+
+    #[test]
+    fn detect_bird_tweet() {
+        let detector = Detector::new();
+        let input = DetectorInput::Exec {
+            pid: 1234,
+            uid: 1000,
+            comm: "bird".to_string(),
+            argv: vec!["bird".to_string(), "tweet".to_string(), "secret data".to_string()],
+            cwd: None,
+        };
+        let alerts = detector.detect(&input);
+        assert!(!alerts.is_empty(), "Expected alert for bird tweet");
+        assert!(alerts.iter().any(|a| a.rule_id == "exfil-bird"));
+        assert_eq!(alerts[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn detect_bird_dm() {
+        let detector = Detector::new();
+        let input = DetectorInput::Exec {
+            pid: 1234,
+            uid: 1000,
+            comm: "bird".to_string(),
+            argv: vec!["bird".to_string(), "dm".to_string(), "@attacker".to_string()],
+            cwd: None,
+        };
+        let alerts = detector.detect(&input);
+        assert!(alerts.iter().any(|a| a.rule_id == "exfil-bird"));
+    }
+
+    #[test]
+    fn benign_gog_list_passes() {
+        let detector = Detector::new();
+        // gog list should not trigger
+        let input = DetectorInput::Exec {
+            pid: 1234,
+            uid: 1000,
+            comm: "gog".to_string(),
+            argv: vec!["gog".to_string(), "mail".to_string(), "list".to_string()],
+            cwd: None,
+        };
+        let alerts = detector.detect(&input);
+        assert!(!alerts.iter().any(|a| a.rule_id == "exfil-gog-mail"), 
+            "gog mail list should not trigger exfil alert");
+    }
+
+    #[test]
+    fn benign_himalaya_list_passes() {
+        let detector = Detector::new();
+        // himalaya list should not trigger
+        let input = DetectorInput::Exec {
+            pid: 1234,
+            uid: 1000,
+            comm: "himalaya".to_string(),
+            argv: vec!["himalaya".to_string(), "list".to_string()],
+            cwd: None,
+        };
+        let alerts = detector.detect(&input);
+        assert!(!alerts.iter().any(|a| a.rule_id == "exfil-himalaya"),
+            "himalaya list should not trigger exfil alert");
+    }
 }
