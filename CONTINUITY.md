@@ -30,9 +30,11 @@ Build a tamper-resistant audit watchdog that makes it *hard* for a compromised `
 - [x] **Bead 2:** Detector crate — Rule-based detection (20+ rules, 4 tests)
 - [x] .gitignore added, target artifacts cleaned
 - [x] **Bead 3:** Collector (dev mode) — inotify + proc enrichment, Collector with start/stop
+- [x] **Bead 4:** Collector (privileged) — fanotify with UID filtering
+- [x] **Bead 5:** Append-only writer — O_APPEND + rotation + chattr +a check
 
 ### Now
-- Bead 5: Append-only writer — O_APPEND + chattr +a integration
+- Bead 6: Alerting integration — hook detector to writer, emit alerts
 
 ### Next
 - Bead 5: Append-only writer — O_APPEND + chattr +a integration
