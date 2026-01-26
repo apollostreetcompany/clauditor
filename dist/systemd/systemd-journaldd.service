@@ -64,9 +64,11 @@ LockPersonality=true
 RestrictSUIDSGID=true
 
 # System call filter (allowlist approach)
+# NOTE: fanotify_init and fanotify_mark are in @privileged but we need them.
+# We explicitly allow them while blocking other privileged syscalls via @resources.
 SystemCallArchitectures=native
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources
+SystemCallFilter=@system-service fanotify_init fanotify_mark
+SystemCallFilter=~@resources
 SystemCallErrorNumber=EPERM
 
 # Memory protection
