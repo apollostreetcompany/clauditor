@@ -1,4 +1,3 @@
 [workspace]
-members = ["crates/schema", "crates/detector"]
+members = ["crates/schema", "crates/detector", "crates/collector"]
 resolver = "2"
-
