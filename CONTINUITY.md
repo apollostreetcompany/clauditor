@@ -34,10 +34,9 @@ Build a tamper-resistant audit watchdog that makes it *hard* for a compromised `
 - [x] **Bead 5:** Append-only writer — O_APPEND + rotation + chattr +a check
 
 ### Now
-- Bead 6: Alerting integration — hook detector to writer, emit alerts
+- Bead 7: Digest/report subcommand — summarize logs
 
 ### Next
-- Bead 5: Append-only writer — O_APPEND + chattr +a integration
 - Bead 6: Alerting integration
 - Bead 7: Digest/report subcommand
 - Bead 8: Systemd hardening
