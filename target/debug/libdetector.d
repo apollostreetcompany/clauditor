@@ -1,0 +1,1 @@
+/home/clawdbot/clawd/skills/clauditor/target/debug/libdetector.rlib: /home/clawdbot/clawd/skills/clauditor/crates/detector/src/lib.rs /home/clawdbot/clawd/skills/clauditor/crates/detector/src/rules.rs
