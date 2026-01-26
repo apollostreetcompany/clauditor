@@ -32,7 +32,7 @@ Build a tamper-resistant audit watchdog that makes it *hard* for a compromised `
 - [x] **Bead 3:** Collector (dev mode) — inotify + proc enrichment, Collector with start/stop
 
 ### Now
-- Bead 4: Collector (privileged) — fanotify + eBPF with UID filtering
+- Bead 5: Append-only writer — O_APPEND + chattr +a integration
 
 ### Next
 - Bead 5: Append-only writer — O_APPEND + chattr +a integration
