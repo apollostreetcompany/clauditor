@@ -119,11 +119,41 @@ do_install() {
     echo "  You're now protected by the claw-ful auditor."
     echo "  No shell-fish behavior escapes these pincers!"
     echo
+    echo "  ═══════════════════════════════════════"
+    echo "  📋 CURRENT CONFIGURATION"
+    echo "  ═══════════════════════════════════════"
+    echo "  • Monitoring user:  UID 1000 (clawdbot)"
+    echo "  • Watch mode:       exec-only (low overhead)"
+    echo "  • Alert threshold:  medium severity+"
+    echo "  • Daily digest:     enabled (via systemd timer)"
+    echo
+    echo "  ═══════════════════════════════════════"
+    echo "  📍 KEY PATHS"
+    echo "  ═══════════════════════════════════════"
     echo "  📁 Logs:    $LOG_DIR/events.log"
     echo "  ⚙️  Config:  $CONFIG_DIR/config.toml"
-    echo "  📊 Digest:  clauditor digest --log $LOG_DIR/events.log"
+    echo "  🔑 HMAC:    $CONFIG_DIR/key"
     echo
-    echo "  🗑️  Remove:  $0 remove"
+    echo "  ═══════════════════════════════════════"
+    echo "  🛠️  COMMANDS"
+    echo "  ═══════════════════════════════════════"
+    echo "  View digest:   sudo $BINARY digest --log $LOG_DIR/events.log"
+    echo "  Check status:  systemctl status systemd-journaldd"
+    echo "  View logs:     sudo journalctl -u systemd-journaldd -f"
+    echo "  Edit config:   sudo nano $CONFIG_DIR/config.toml"
+    echo "  Restart:       sudo systemctl restart systemd-journaldd"
+    echo "  Remove:        $0 remove"
+    echo
+    echo "  ═══════════════════════════════════════"
+    echo "  ⚙️  CONFIGURATION OPTIONS"
+    echo "  ═══════════════════════════════════════"
+    echo "  Edit $CONFIG_DIR/config.toml to change:"
+    echo "  • target_uid     - Which user to monitor"
+    echo "  • watch_paths    - Directories to watch"
+    echo "  • min_severity   - Alert threshold (low/medium/high/critical)"
+    echo "  • fsync          - Write durability (none/periodic/every)"
+    echo
+    echo "  After editing, restart: sudo systemctl restart systemd-journaldd"
     echo
     echo "  \"In cod we trust, but we verify.\" 🐟"
     echo
