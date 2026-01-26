@@ -10,6 +10,7 @@ use schema::{Event, EventKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -316,10 +317,8 @@ fn read_cwd(pid: u32) -> Option<PathBuf> {
 /// Validate path is safe to process.
 /// Returns None for paths with null bytes or other problematic patterns.
 fn validate_path(path: &Path) -> Option<PathBuf> {
-    // Convert to string and back to catch problematic paths
-    // Path with embedded nulls would cause issues
-    let path_str = path.to_str()?;
-    if path_str.contains('\0') {
+    // Reject paths with embedded null bytes
+    if path.as_os_str().as_bytes().contains(&0) {
         return None;
     }
     Some(path.to_path_buf())
@@ -340,6 +339,8 @@ fn read_uid(pid: u32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
     use std::fs::{File, OpenOptions};
     use std::io::Write;
     
@@ -408,10 +409,12 @@ mod tests {
 
     #[test]
     fn validate_path_rejects_null_bytes() {
-        // This is tricky - OsString can hold null bytes but Path typically can't
-        // through normal means. Test the validation logic.
-        let path = PathBuf::from("/home/user/normal.txt");
-        assert!(validate_path(&path).is_some());
+        let mut bytes = b"/tmp/clauditor".to_vec();
+        bytes.push(0);
+        bytes.extend_from_slice(b"bad");
+        let os = OsString::from_vec(bytes);
+        let path = PathBuf::from(os);
+        assert!(validate_path(&path).is_none());
     }
 
     #[test]
