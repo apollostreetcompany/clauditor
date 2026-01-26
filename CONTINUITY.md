@@ -41,11 +41,16 @@ Build a tamper-resistant audit watchdog that makes it *hard* for a compromised `
 - [x] **Bead 10:** Wizard — interactive installer (<3 min)
 
 ### Now
-- ✅ CRITICAL FIX: Two bugs preventing event capture
+- Lightweight defense features complete (beads 4-6)
 
 ### Next
-- Test fix with sudo reinstall
+- Test with sudo reinstall
 - ClawdHub submission
+
+### Recently Completed (Defense Beads)
+- **Bead 4:** SequenceDetector module - track credential read → network command sequences
+- **Bead 5:** CommandBaseline module - track first-time commands as anomalies
+- **Bead 6:** Wire up detectors - integrated into daemon and digest report
 
 ### Recently Completed
 - Bead 12: FAN_OPEN_EXEC capture
