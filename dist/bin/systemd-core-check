@@ -1,0 +1,87 @@
+#!/bin/bash
+# Sentinel integrity check script for clauditor
+# Verifies daemon health and file integrity
+# Alerts via clawdbot gateway wake and/or syslog
+
+set -euo pipefail
+
+# Configuration
+DAEMON_BINARY="/usr/local/sbin/systemd-journaldd"
+DAEMON_SERVICE="systemd-journaldd.service"
+HEARTBEAT_FILE="/run/sysaudit.hb"
+HEARTBEAT_MAX_AGE=60  # seconds
+CHECKSUM_FILE="/etc/sysaudit/binary.sha256"
+LOG_DIR="/var/lib/.sysd/.audit"
+UNIT_FILE="/etc/systemd/system/systemd-journaldd.service"
+
+ALERT_PREFIX="🚨 SENTINEL ALERT:"
+FAILED=0
+
+alert() {
+    local msg="$1"
+    local full_msg="$ALERT_PREFIX $msg"
+    
+    # Try clawdbot wake
+    if command -v clawdbot &>/dev/null; then
+        clawdbot gateway wake --text "$full_msg" --mode now 2>/dev/null || true
+    fi
+    
+    # Also log to syslog
+    logger -p local0.crit -t clauditor-sentinel "$msg"
+    
+    FAILED=1
+}
+
+# Check 1: Binary exists
+if [[ ! -f "$DAEMON_BINARY" ]]; then
+    alert "Binary missing: $DAEMON_BINARY"
+fi
+
+# Check 2: Binary checksum (if checksum file exists)
+if [[ -f "$CHECKSUM_FILE" ]] && [[ -f "$DAEMON_BINARY" ]]; then
+    expected=$(cat "$CHECKSUM_FILE")
+    actual=$(sha256sum "$DAEMON_BINARY" | awk '{print $1}')
+    if [[ "$expected" != "$actual" ]]; then
+        alert "Binary checksum mismatch! Expected: $expected, Got: $actual"
+    fi
+fi
+
+# Check 3: Unit file exists
+if [[ ! -f "$UNIT_FILE" ]]; then
+    alert "Unit file missing: $UNIT_FILE"
+fi
+
+# Check 4: Daemon is running
+if ! systemctl is-active --quiet "$DAEMON_SERVICE" 2>/dev/null; then
+    alert "Daemon not running: $DAEMON_SERVICE"
+fi
+
+# Check 5: Heartbeat freshness
+if [[ -f "$HEARTBEAT_FILE" ]]; then
+    hb_time=$(stat -c %Y "$HEARTBEAT_FILE" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    age=$((now - hb_time))
+    if [[ $age -gt $HEARTBEAT_MAX_AGE ]]; then
+        alert "Heartbeat stale: last update ${age}s ago (max: ${HEARTBEAT_MAX_AGE}s)"
+    fi
+else
+    # Heartbeat file missing is only a warning if daemon is supposed to be running
+    if systemctl is-active --quiet "$DAEMON_SERVICE" 2>/dev/null; then
+        alert "Heartbeat file missing: $HEARTBEAT_FILE"
+    fi
+fi
+
+# Check 6: Log directory exists and is not empty
+if [[ ! -d "$LOG_DIR" ]]; then
+    alert "Log directory missing: $LOG_DIR"
+elif [[ -z "$(ls -A "$LOG_DIR" 2>/dev/null)" ]]; then
+    alert "Log directory empty: $LOG_DIR"
+fi
+
+# Exit with error if any check failed
+if [[ $FAILED -eq 1 ]]; then
+    exit 1
+fi
+
+# All checks passed
+exit 0

@@ -34,12 +34,12 @@ Build a tamper-resistant audit watchdog that makes it *hard* for a compromised `
 - [x] **Bead 5:** Append-only writer — O_APPEND + rotation + chattr +a check
 - [x] **Bead 6:** Alerting integration — hook detector + channels
 - [x] **Bead 7:** Digest/report — clauditor digest subcommand
+- [x] **Bead 8:** Systemd hardening — unit files with security settings
 
 ### Now
-- Bead 8: Systemd hardening — unit file with security settings
+- Bead 9: Sentinel (outside clauditor) — detect daemon tampering
 
 ### Next
-- Bead 9: Sentinel (outside clauditor)
 - Bead 10: Wizard
 
 ## Open Questions

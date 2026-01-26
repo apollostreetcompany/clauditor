@@ -1,0 +1,18 @@
+# Sentinel timer for clauditor
+# Periodic integrity checks as backup to path watcher
+# Independent from main daemon
+
+[Unit]
+Description=Core Service Integrity Monitor (Timer)
+Documentation=man:systemd.timer(5)
+
+[Timer]
+# Check every minute
+OnBootSec=60
+OnUnitActiveSec=60
+
+# Don't accumulate missed runs
+Persistent=false
+
+[Install]
+WantedBy=timers.target

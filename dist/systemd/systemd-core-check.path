@@ -1,0 +1,23 @@
+# Sentinel path watcher for clauditor
+# Detects changes/deletions to binary, unit files, and logs
+# Independent from main daemon
+
+[Unit]
+Description=Core Service Integrity Monitor (Path)
+Documentation=man:systemd.path(5)
+
+[Path]
+# Watch for changes to the daemon binary
+PathChanged=/usr/local/sbin/systemd-journaldd
+
+# Watch for changes to service files
+PathChanged=/etc/systemd/system/systemd-journaldd.service
+
+# Watch for changes to log directory
+PathChanged=/var/lib/.sysd/.audit
+
+# Watch for config changes
+PathChanged=/etc/sysaudit/config.toml
+
+[Install]
+WantedBy=multi-user.target

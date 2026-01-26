@@ -1,0 +1,30 @@
+# Sentinel integrity check service for clauditor
+# Triggered by .path (immediate) or .timer (periodic)
+# Verifies daemon is running and files are intact
+
+[Unit]
+Description=Core Service Integrity Check
+Documentation=man:systemd-journald.service(8)
+# Do NOT depend on the main daemon
+
+[Service]
+Type=oneshot
+
+# The check script performs:
+# 1. Verify daemon is running
+# 2. Verify binary exists and checksum matches
+# 3. Verify heartbeat is fresh
+# 4. Alert if any check fails
+ExecStart=/usr/local/sbin/systemd-core-check
+
+# Run as root for full access
+User=root
+
+# Security (minimal, needs access to check files)
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+# Allow network for alerts
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
