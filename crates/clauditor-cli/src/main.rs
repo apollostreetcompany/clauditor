@@ -8,6 +8,7 @@ use alerter::Alerter;
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use collector::{CollectorEvent, DevCollector, PrivilegedCollector};
+use detector::{CommandBaseline, SequenceDetector, Alert};
 use schema::verify_chain;
 use sd_notify::NotifyState;
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,14 @@ fn default_key_path() -> PathBuf {
     PathBuf::from(DEFAULT_KEY_PATH)
 }
 
+fn default_baseline_path() -> PathBuf {
+    PathBuf::from("/var/lib/.sysd/.audit/baseline.json")
+}
+
+fn default_sequence_ttl_secs() -> u64 {
+    300 // 5 minutes
+}
+
 #[derive(Debug, Deserialize)]
 struct DaemonConfig {
     #[serde(default = "default_key_path")]
@@ -39,6 +48,12 @@ struct DaemonConfig {
     collector: CollectorConfig,
     writer: WriterConfigFile,
     alerter: alerter::AlerterConfig,
+    /// Path to store command baseline (default: /var/lib/.sysd/.audit/baseline.json)
+    #[serde(default = "default_baseline_path")]
+    baseline_path: PathBuf,
+    /// Sequence detector TTL in seconds (default: 300 = 5 minutes)
+    #[serde(default = "default_sequence_ttl_secs")]
+    sequence_ttl_secs: u64,
 }
 
 fn default_exec_watchlist() -> Vec<String> {
@@ -388,6 +403,27 @@ fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let alerter = Alerter::new(config.alerter);
     let detector = detector::Detector::new();
 
+    // Initialize sequence detector with configured TTL
+    let mut sequence_detector = SequenceDetector::with_ttl(
+        Duration::from_secs(config.sequence_ttl_secs)
+    );
+    eprintln!("sequence detector active (ttl={}s)", config.sequence_ttl_secs);
+
+    // Initialize command baseline
+    let mut baseline = match CommandBaseline::with_path(config.baseline_path.clone()) {
+        Ok(b) => {
+            eprintln!("baseline loaded from {:?} ({} known commands)", 
+                config.baseline_path, b.known_count());
+            b
+        }
+        Err(e) => {
+            eprintln!("baseline load failed ({e}), using in-memory baseline");
+            CommandBaseline::new()
+        }
+    };
+    let mut baseline_persist_counter: u32 = 0;
+    const BASELINE_PERSIST_INTERVAL: u32 = 100; // Persist every 100 events
+
     let shutdown = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(SIGTERM, Arc::clone(&shutdown))?;
     signal_hook::flag::register(SIGINT, Arc::clone(&shutdown))?;
@@ -412,7 +448,29 @@ fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         match receiver.recv_timeout(Duration::from_millis(500)) {
             Ok(event) => {
                 let input = event_to_detector_input(&event);
-                let alerts = detector.detect(&input);
+                let mut alerts = detector.detect(&input);
+
+                // Run sequence and baseline detection for exec events
+                if let detector::DetectorInput::Exec { comm, argv, .. } = &input {
+                    // Check for temporal sequences (sensitive read → network command)
+                    if let Some(seq_alert) = sequence_detector.check_exec(comm, argv) {
+                        alerts.push(Alert::from(&seq_alert));
+                    }
+
+                    // Check for baseline anomalies (first-time commands)
+                    if let Some(base_alert) = baseline.record(comm) {
+                        alerts.push(Alert::from(&base_alert));
+                    }
+
+                    // Periodically persist baseline
+                    baseline_persist_counter += 1;
+                    if baseline_persist_counter >= BASELINE_PERSIST_INTERVAL {
+                        if let Err(e) = baseline.persist() {
+                            eprintln!("baseline persist failed: {e}");
+                        }
+                        baseline_persist_counter = 0;
+                    }
+                }
 
                 if let Err(e) = writer.write_event(&event) {
                     eprintln!("writer write_event failed: {e}");
@@ -447,6 +505,14 @@ fn run_daemon(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     collector_handle.request_stop();
     let _ = writer.flush();
+    
+    // Persist baseline on shutdown
+    if let Err(e) = baseline.persist() {
+        eprintln!("baseline persist on shutdown failed: {e}");
+    } else {
+        eprintln!("baseline persisted ({} commands)", baseline.known_count());
+    }
+    
     Ok(())
 }
 
@@ -461,6 +527,17 @@ struct DigestReport {
     top_commands: Vec<(String, usize)>,
     top_paths: Vec<(String, usize)>,
     anomalies: Vec<String>,
+    /// Sequence alerts (sensitive read → network command)
+    sequence_alerts: Vec<SequenceAlertReport>,
+    /// First-time commands (not in baseline)
+    new_commands: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SequenceAlertReport {
+    network_command: String,
+    sensitive_files: Vec<String>,
+    time_gap_secs: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -542,6 +619,12 @@ fn run_digest(
     let mut rule_counts: HashMap<String, usize> = HashMap::new();
 
     let detector = detector::Detector::new();
+    
+    // Track sequences and baseline during digest replay
+    let mut sequence_detector = SequenceDetector::new();
+    let mut baseline = CommandBaseline::new();
+    let mut sequence_alerts_report: Vec<SequenceAlertReport> = Vec::new();
+    let mut new_commands: Vec<String> = Vec::new();
 
     for event in &events {
         // Count commands
@@ -570,6 +653,31 @@ fn run_digest(
             let cat = format!("{:?}", alert.category);
             *alert_summary.by_category.entry(cat).or_insert(0) += 1;
             *rule_counts.entry(alert.rule_id).or_insert(0) += 1;
+        }
+
+        // Check sequence and baseline for exec events
+        if let detector::DetectorInput::Exec { comm, argv, .. } = &input {
+            // Check for temporal sequences
+            if let Some(seq_alert) = sequence_detector.check_exec(comm, argv) {
+                sequence_alerts_report.push(SequenceAlertReport {
+                    network_command: seq_alert.network_command,
+                    sensitive_files: seq_alert.accessed_files,
+                    time_gap_secs: seq_alert.time_gap_secs,
+                });
+                alert_summary.total += 1;
+                *alert_summary.by_severity.entry("High".to_string()).or_insert(0) += 1;
+                *alert_summary.by_category.entry("Sequence".to_string()).or_insert(0) += 1;
+                *rule_counts.entry("sequence-exfil".to_string()).or_insert(0) += 1;
+            }
+
+            // Check for baseline anomalies
+            if let Some(base_alert) = baseline.record(comm) {
+                new_commands.push(base_alert.command);
+                alert_summary.total += 1;
+                *alert_summary.by_severity.entry("Medium".to_string()).or_insert(0) += 1;
+                *alert_summary.by_category.entry("Baseline".to_string()).or_insert(0) += 1;
+                *rule_counts.entry("baseline-new-command".to_string()).or_insert(0) += 1;
+            }
         }
     }
 
@@ -615,6 +723,8 @@ fn run_digest(
         top_commands,
         top_paths,
         anomalies,
+        sequence_alerts: sequence_alerts_report,
+        new_commands,
     };
 
     // Output
@@ -761,6 +871,30 @@ fn print_markdown_report(report: &DigestReport) {
         println!("## Anomalies");
         for anomaly in &report.anomalies {
             println!("- ⚠️ {}", anomaly);
+        }
+        println!();
+    }
+
+    if !report.sequence_alerts.is_empty() {
+        println!("## 🔗 Sequence Alerts (Potential Exfiltration)");
+        println!();
+        for alert in &report.sequence_alerts {
+            println!("**Network Command:** `{}`", alert.network_command);
+            println!("- Time gap: {} seconds after sensitive access", alert.time_gap_secs);
+            println!("- Sensitive files accessed:");
+            for file in &alert.sensitive_files {
+                println!("  - `{}`", file);
+            }
+            println!();
+        }
+    }
+
+    if !report.new_commands.is_empty() {
+        println!("## 🆕 New Commands (Not in Baseline)");
+        println!();
+        println!("These commands were seen for the first time:");
+        for cmd in &report.new_commands {
+            println!("- `{}`", cmd);
         }
         println!();
     }
